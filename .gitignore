@@ -1,0 +1,12 @@
+# Dependencies
+node_modules/
+
+# Build artifacts
+dist/
+
+# Local OCR language data
+eng.traineddata
+
+# Logs & temp files
+*.log
+.DS_Store
