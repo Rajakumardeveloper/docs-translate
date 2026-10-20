@@ -1,5 +1,7 @@
 // ReadHindi Dictionary & Translation Service
-// Multi-tier: Built-in editorial vocabulary -> LocalStorage Cache -> Free Translation Fallbacks
+// Multi-tier: Context-Aware Grammar Engine -> Built-in editorial vocabulary -> LocalStorage Cache -> Free Translation Fallbacks
+
+import { analyzeWordInContext, POLYSEMOUS_WORDS } from "./grammarEngine.js";
 
 export const BUILTIN_DICTIONARY = {
   growth: {
@@ -526,6 +528,62 @@ export const BUILTIN_DICTIONARY = {
     meaning: "लोकतंत्र",
     alternatives: ["लोकतंत्र", "प्रजातंत्र", "जनतंत्र"],
     sentence: "A free press is the bedrock of democracy. — स्वतंत्र प्रेस लोकतंत्र की आधारशिला है।"
+  },
+  present: {
+    word: "present",
+    ipa: "/ˈprez.ənt/",
+    meaning: "उपहार / वर्तमान / प्रस्तुत करना",
+    alternatives: ["उपहार", "वर्तमान", "प्रस्तुत करना", "मौजूदा"],
+    sentence: "The present economic situation requires bold reforms. — मौजूदा आर्थिक स्थिति में साहसिक सुधारों की आवश्यकता है।"
+  },
+  book: {
+    word: "book",
+    ipa: "/bʊk/",
+    meaning: "किताब / आरक्षित करना",
+    alternatives: ["किताब", "पुस्तक", "आरक्षित करना", "बुक करना"],
+    sentence: "He bought a new book on Indian history. — उसने भारतीय इतिहास पर एक नई किताब खरीदी।"
+  },
+  light: {
+    word: "light",
+    ipa: "/laɪt/",
+    meaning: "प्रकाश / रोशनी / हल्का",
+    alternatives: ["प्रकाश", "रोशनी", "हल्का", "प्रज्वलित करना"],
+    sentence: "Sunlight is a natural source of light. — सूर्य का प्रकाश रोशनी का एक प्राकृतिक स्रोत है।"
+  },
+  run: {
+    word: "run",
+    ipa: "/rʌn/",
+    meaning: "दौड़ना / चलाना / दौड़",
+    alternatives: ["दौड़ना", "चलाना", "दौड़", "संचालित करना"],
+    sentence: "Domestic industries run at high capacity. — घरेलू उद्योग उच्च क्षमता पर चलते हैं।"
+  },
+  fast: {
+    word: "fast",
+    ipa: "/fæst/",
+    meaning: "तेज़ / तेज़ी से / उपवास",
+    alternatives: ["तेज़", "तेज़ी से", "उपवास", "व्रत"],
+    sentence: "India's digital economy is growing fast. — भारत की डिजिटल अर्थव्यवस्था तेज़ी से बढ़ रही है।"
+  },
+  record: {
+    word: "record",
+    ipa: "/ˈrek.ɚd/",
+    meaning: "कीर्तिमान / रिकॉर्ड / दर्ज करना",
+    alternatives: ["कीर्तिमान", "रिकॉर्ड", "अभिलेख", "दर्ज करना"],
+    sentence: "Agricultural exports reached a record high. — कृषि निर्यात रिकॉर्ड ऊंचाई पर पहुंच गया।"
+  },
+  court: {
+    word: "court",
+    ipa: "/kɔːrt/",
+    meaning: "अदालत / न्यायालय",
+    alternatives: ["अदालत", "न्यायालय", "कोर्ट", "रिझाना"],
+    sentence: "The Supreme Court delivered its verdict. — सर्वोच्च न्यायालय ने अपना फैसला सुनाया।"
+  },
+  state: {
+    word: "state",
+    ipa: "/steɪt/",
+    meaning: "राज्य / स्थिति / बयान करना",
+    alternatives: ["राज्य", "स्थिति", "दशा", "बयान करना"],
+    sentence: "The state government approved the development plan. — राज्य सरकार ने विकास योजना को मंजूरी दी।"
   }
 };
 
@@ -600,7 +658,18 @@ export async function lookupText(rawText, signal = null, contextSentence = "") {
     // 1. Check Cache
     const cached = getCached(cacheKey);
     if (cached) {
-      return { ...cached, text: normalized, sentence: cached.sentence || contextSentence };
+      return {
+        ...cached,
+        text: normalized,
+        sentence: cached.sentence || contextSentence,
+        pos: isSentence ? "Sentence" : "Phrase",
+        posHindi: isSentence ? "पूर्ण वाक्य (Sentence)" : "वाक्यांश (Phrase)",
+        contextDistinction: cached.contextDistinction || (isSentence ? "पूर्ण वाक्य अनुवाद (Sentence Translation)" : "वाक्यांश अनुवाद (Phrase Translation)"),
+        grammarExplanation: cached.grammarExplanation || (isSentence ? "यह एक पूर्ण वाक्य है जिसमें कर्ता और क्रिया शामिल हैं।" : "यह दो या अधिक शब्दों का एक संयुक्त वाक्यांश (Phrase) है।"),
+        hinglishExplanation: cached.hinglishExplanation || (isSentence ? "Yeh ek complete sentence translation hai." : "Yeh ek multi-word phrase hai."),
+        exampleSentence: cached.exampleSentence || normalized,
+        exampleHindi: cached.exampleHindi || cached.meaning
+      };
     }
 
     // 2. Online Translation Tier 1: Google Translate public API (handles long phrases & sentences)
@@ -625,7 +694,18 @@ export async function lookupText(rawText, signal = null, contextSentence = "") {
               ipa: "", // Phrases do not need single-word IPA
               meaning: translation,
               alternatives: [translation],
-              sentence: contextSentence,
+              sentence: contextSentence || normalized,
+              pos: isSentence ? "Sentence" : "Phrase",
+              posHindi: isSentence ? "पूर्ण वाक्य (Sentence)" : "वाक्यांश (Phrase)",
+              posConfidence: 1.0,
+              contextMeaning: translation,
+              contextDistinction: isSentence ? "पूर्ण वाक्य अनुवाद (Sentence Translation)" : "वाक्यांश अनुवाद (Phrase Translation)",
+              grammarExplanation: isSentence ? "यह एक पूर्ण वाक्य है जिसमें कर्ता (subject) और क्रिया (predicate) शामिल हैं।" : "यह दो या अधिक शब्दों का एक संयुक्त वाक्यांश (Phrase) है।",
+              hinglishExplanation: isSentence ? "Yeh ek complete sentence translation hai." : "Yeh ek multi-word phrase hai.",
+              exampleSentence: normalized,
+              exampleHindi: translation,
+              phonetic: "",
+              isContextCertain: true,
               source: "Google Translate"
             };
             setCache(cacheKey, result);
@@ -652,7 +732,18 @@ export async function lookupText(rawText, signal = null, contextSentence = "") {
             ipa: "",
             meaning: translated,
             alternatives: [translated],
-            sentence: contextSentence,
+            sentence: contextSentence || normalized,
+            pos: isSentence ? "Sentence" : "Phrase",
+            posHindi: isSentence ? "पूर्ण वाक्य (Sentence)" : "वाक्यांश (Phrase)",
+            posConfidence: 0.9,
+            contextMeaning: translated,
+            contextDistinction: isSentence ? "पूर्ण वाक्य अनुवाद (Sentence Translation)" : "वाक्यांश अनुवाद (Phrase Translation)",
+            grammarExplanation: isSentence ? "यह एक पूर्ण वाक्य है जिसमें कर्ता और क्रिया शामिल हैं।" : "यह दो या अधिक शब्दों का एक संयुक्त वाक्यांश (Phrase) है।",
+            hinglishExplanation: isSentence ? "Yeh ek complete sentence translation hai." : "Yeh ek multi-word phrase hai.",
+            exampleSentence: normalized,
+            exampleHindi: translated,
+            phonetic: "",
+            isContextCertain: true,
             source: "MyMemory Translation"
           };
           setCache(cacheKey, result);
@@ -671,13 +762,24 @@ export async function lookupText(rawText, signal = null, contextSentence = "") {
       ipa: "",
       meaning: "अनुवाद उपलब्ध नहीं है (कृपया इंटरनेट कनेक्शन जाँचें)",
       alternatives: ["अनुवाद उपलब्ध नहीं है (कृपया इंटरनेट कनेक्शन जाँचें)"],
-      sentence: contextSentence,
+      sentence: contextSentence || normalized,
+      pos: isSentence ? "Sentence" : "Phrase",
+      posHindi: isSentence ? "पूर्ण वाक्य (Sentence)" : "वाक्यांश (Phrase)",
+      posConfidence: 0.5,
+      contextMeaning: "अनुवाद सेवा अनुपलब्ध",
+      contextDistinction: "अनुवाद सेवा अनुपलब्ध",
+      grammarExplanation: "",
+      hinglishExplanation: "",
+      exampleSentence: normalized,
+      exampleHindi: "",
+      phonetic: "",
+      isContextCertain: false,
       source: "Offline Fallback"
     };
   }
 
   // ---------------------------------------------------------
-  // CASE 2: SINGLE WORD LOOKUP
+  // CASE 2: SINGLE WORD LOOKUP WITH CONTEXT-AWARE GRAMMAR
   // ---------------------------------------------------------
   const word = cleanLookupWord(normalized);
   if (!word) {
@@ -688,73 +790,111 @@ export async function lookupText(rawText, signal = null, contextSentence = "") {
       meaning: "मान्य शब्द चुनें",
       alternatives: ["मान्य शब्द चुनें"],
       ipa: "",
+      pos: "Uncertain",
+      posHindi: "अस्पष्ट (Context Needed)",
+      posConfidence: 0,
+      contextMeaning: "",
+      contextDistinction: "",
+      sentence: contextSentence,
+      grammarExplanation: "",
+      hinglishExplanation: "",
+      exampleSentence: "",
+      exampleHindi: "",
+      phonetic: "",
+      isContextCertain: false,
       source: "Validation"
     };
   }
 
   const lower = word.toLowerCase();
-  const cacheKey = `word_${lower}`;
+
+  // Run Context-Aware Grammar & Teacher Analysis
+  const teacherAnalysis = analyzeWordInContext(word, contextSentence);
+
+  // If word is known polysemous word and we have confident context-specific analysis
+  if (POLYSEMOUS_WORDS[lower] && teacherAnalysis.isContextCertain) {
+    return {
+      type: "word",
+      text: word,
+      word,
+      ipa: teacherAnalysis.ipa || `/${word}/`,
+      meaning: teacherAnalysis.meaning,
+      alternatives: teacherAnalysis.alternatives,
+      pos: teacherAnalysis.pos,
+      posHindi: teacherAnalysis.posHindi,
+      posConfidence: teacherAnalysis.posConfidence,
+      contextMeaning: teacherAnalysis.contextMeaning,
+      contextDistinction: teacherAnalysis.contextDistinction,
+      sentence: contextSentence || teacherAnalysis.sentence,
+      grammarExplanation: teacherAnalysis.grammarExplanation,
+      hinglishExplanation: teacherAnalysis.hinglishExplanation,
+      exampleSentence: teacherAnalysis.exampleSentence,
+      exampleHindi: teacherAnalysis.exampleHindi,
+      phonetic: teacherAnalysis.phonetic || word,
+      isContextCertain: true,
+      source: "Context Grammar Engine"
+    };
+  }
 
   // 1. Built-in editorial dictionary lookup
-  if (BUILTIN_DICTIONARY[lower]) {
-    const entry = BUILTIN_DICTIONARY[lower];
-    return {
-      type: "word",
-      text: word,
-      word,
-      ipa: entry.ipa || `/${word}/`,
-      meaning: entry.meaning,
-      alternatives: entry.alternatives || [entry.meaning],
-      sentence: entry.sentence || contextSentence,
-      source: "Built-in dictionary"
-    };
+  let builtinEntry = BUILTIN_DICTIONARY[lower];
+  if (!builtinEntry) {
+    if (lower.endsWith("s") && BUILTIN_DICTIONARY[lower.slice(0, -1)]) {
+      builtinEntry = BUILTIN_DICTIONARY[lower.slice(0, -1)];
+    } else if (lower.endsWith("ed") && BUILTIN_DICTIONARY[lower.slice(0, -2)]) {
+      builtinEntry = BUILTIN_DICTIONARY[lower.slice(0, -2)];
+    } else if (lower.endsWith("ing") && BUILTIN_DICTIONARY[lower.slice(0, -3)]) {
+      builtinEntry = BUILTIN_DICTIONARY[lower.slice(0, -3)];
+    }
   }
 
-  // Check stemmed or singular form in built-in dictionary
-  if (lower.endsWith("s") && BUILTIN_DICTIONARY[lower.slice(0, -1)]) {
-    const base = BUILTIN_DICTIONARY[lower.slice(0, -1)];
+  if (builtinEntry) {
+    const exParts = (builtinEntry.sentence || "").split("—");
     return {
       type: "word",
       text: word,
       word,
-      ipa: base.ipa || `/${word}/`,
-      meaning: base.meaning,
-      alternatives: base.alternatives || [base.meaning],
-      sentence: base.sentence || contextSentence,
-      source: "Built-in dictionary"
-    };
-  }
-  if (lower.endsWith("ed") && BUILTIN_DICTIONARY[lower.slice(0, -2)]) {
-    const base = BUILTIN_DICTIONARY[lower.slice(0, -2)];
-    return {
-      type: "word",
-      text: word,
-      word,
-      ipa: base.ipa || `/${word}/`,
-      meaning: base.meaning,
-      alternatives: base.alternatives || [base.meaning],
-      sentence: base.sentence || contextSentence,
-      source: "Built-in dictionary"
-    };
-  }
-  if (lower.endsWith("ing") && BUILTIN_DICTIONARY[lower.slice(0, -3)]) {
-    const base = BUILTIN_DICTIONARY[lower.slice(0, -3)];
-    return {
-      type: "word",
-      text: word,
-      word,
-      ipa: base.ipa || `/${word}/`,
-      meaning: base.meaning,
-      alternatives: base.alternatives || [base.meaning],
-      sentence: base.sentence || contextSentence,
+      ipa: builtinEntry.ipa || teacherAnalysis.ipa || `/${word}/`,
+      meaning: builtinEntry.meaning,
+      alternatives: builtinEntry.alternatives || [builtinEntry.meaning],
+      pos: teacherAnalysis.pos,
+      posHindi: teacherAnalysis.posHindi,
+      posConfidence: teacherAnalysis.posConfidence,
+      contextMeaning: teacherAnalysis.contextMeaning || builtinEntry.meaning,
+      contextDistinction: teacherAnalysis.contextDistinction,
+      sentence: contextSentence || builtinEntry.sentence,
+      grammarExplanation: teacherAnalysis.grammarExplanation,
+      hinglishExplanation: teacherAnalysis.hinglishExplanation,
+      exampleSentence: teacherAnalysis.exampleSentence || exParts[0]?.trim() || "",
+      exampleHindi: teacherAnalysis.exampleHindi || exParts[1]?.trim() || "",
+      phonetic: teacherAnalysis.phonetic || word,
+      isContextCertain: teacherAnalysis.isContextCertain,
       source: "Built-in dictionary"
     };
   }
 
   // 2. Local cache lookup
-  const cached = getCached(cacheKey);
+  const sentenceSig = contextSentence ? contextSentence.slice(0, 35).replace(/[^a-zA-Z]/g, "") : "none";
+  const cacheKey = `word_${lower}_${sentenceSig}`;
+  const cached = getCached(cacheKey) || getCached(`word_${lower}`);
   if (cached) {
-    return { ...cached, type: "word", text: word, word, sentence: cached.sentence || contextSentence };
+    return {
+      ...cached,
+      type: "word",
+      text: word,
+      word,
+      pos: teacherAnalysis.pos || cached.pos,
+      posHindi: teacherAnalysis.posHindi || cached.posHindi,
+      posConfidence: teacherAnalysis.posConfidence || cached.posConfidence || 0.7,
+      sentence: contextSentence || cached.sentence,
+      grammarExplanation: teacherAnalysis.grammarExplanation || cached.grammarExplanation,
+      hinglishExplanation: teacherAnalysis.hinglishExplanation || cached.hinglishExplanation,
+      contextDistinction: teacherAnalysis.contextDistinction || cached.contextDistinction,
+      exampleSentence: teacherAnalysis.exampleSentence || cached.exampleSentence,
+      exampleHindi: teacherAnalysis.exampleHindi || cached.exampleHindi,
+      phonetic: teacherAnalysis.phonetic || cached.phonetic || word,
+      isContextCertain: teacherAnalysis.isContextCertain
+    };
   }
 
   // 3. Online Fallback Tier 1: Google Translate public single client
@@ -784,10 +924,21 @@ export async function lookupText(rawText, signal = null, contextSentence = "") {
           type: "word",
           text: word,
           word,
-          ipa: `/${word}/`,
+          ipa: teacherAnalysis.ipa || `/${word}/`,
           meaning: primary,
           alternatives: alternatives.slice(0, 6),
+          pos: teacherAnalysis.pos,
+          posHindi: teacherAnalysis.posHindi,
+          posConfidence: teacherAnalysis.posConfidence,
+          contextMeaning: primary,
+          contextDistinction: teacherAnalysis.contextDistinction,
           sentence: contextSentence,
+          grammarExplanation: teacherAnalysis.grammarExplanation,
+          hinglishExplanation: teacherAnalysis.hinglishExplanation,
+          exampleSentence: teacherAnalysis.exampleSentence,
+          exampleHindi: teacherAnalysis.exampleHindi,
+          phonetic: teacherAnalysis.phonetic || word,
+          isContextCertain: teacherAnalysis.isContextCertain,
           source: "Online translation"
         };
         setCache(cacheKey, result);
@@ -810,10 +961,21 @@ export async function lookupText(rawText, signal = null, contextSentence = "") {
           type: "word",
           text: word,
           word,
-          ipa: `/${word}/`,
+          ipa: teacherAnalysis.ipa || `/${word}/`,
           meaning: translated,
           alternatives: [translated],
+          pos: teacherAnalysis.pos,
+          posHindi: teacherAnalysis.posHindi,
+          posConfidence: teacherAnalysis.posConfidence,
+          contextMeaning: translated,
+          contextDistinction: teacherAnalysis.contextDistinction,
           sentence: contextSentence,
+          grammarExplanation: teacherAnalysis.grammarExplanation,
+          hinglishExplanation: teacherAnalysis.hinglishExplanation,
+          exampleSentence: teacherAnalysis.exampleSentence,
+          exampleHindi: teacherAnalysis.exampleHindi,
+          phonetic: teacherAnalysis.phonetic || word,
+          isContextCertain: teacherAnalysis.isContextCertain,
           source: "Online translation"
         };
         setCache(cacheKey, result);
@@ -839,8 +1001,19 @@ export async function lookupText(rawText, signal = null, contextSentence = "") {
         ipa: phonetic,
         meaning: "हिन्दी अर्थ खोजने के लिए पुनः प्रयास करें",
         alternatives: ["हिन्दी अर्थ खोजने के लिए पुनः प्रयास करें"],
+        pos: teacherAnalysis.pos,
+        posHindi: teacherAnalysis.posHindi,
+        posConfidence: teacherAnalysis.posConfidence,
+        contextMeaning: "हिन्दी अर्थ खोजने के लिए पुनः प्रयास करें",
+        contextDistinction: teacherAnalysis.contextDistinction,
         definition: def ? `English definition: ${def}` : "",
         sentence: contextSentence,
+        grammarExplanation: teacherAnalysis.grammarExplanation,
+        hinglishExplanation: teacherAnalysis.hinglishExplanation,
+        exampleSentence: teacherAnalysis.exampleSentence,
+        exampleHindi: teacherAnalysis.exampleHindi,
+        phonetic: teacherAnalysis.phonetic || word,
+        isContextCertain: teacherAnalysis.isContextCertain,
         source: "English dictionary (offline fallback)"
       };
     }
@@ -852,10 +1025,21 @@ export async function lookupText(rawText, signal = null, contextSentence = "") {
     type: "word",
     text: word,
     word,
-    ipa: `/${word}/`,
+    ipa: teacherAnalysis.ipa || `/${word}/`,
     meaning: "इस शब्द का हिन्दी अर्थ अभी उपलब्ध नहीं है।",
     alternatives: ["इस शब्द का हिन्दी अर्थ अभी उपलब्ध नहीं है।"],
+    pos: teacherAnalysis.pos,
+    posHindi: teacherAnalysis.posHindi,
+    posConfidence: teacherAnalysis.posConfidence,
+    contextMeaning: "इस शब्द का हिन्दी अर्थ अभी उपलब्ध नहीं है।",
+    contextDistinction: teacherAnalysis.contextDistinction,
     sentence: contextSentence,
+    grammarExplanation: teacherAnalysis.grammarExplanation,
+    hinglishExplanation: teacherAnalysis.hinglishExplanation,
+    exampleSentence: teacherAnalysis.exampleSentence,
+    exampleHindi: teacherAnalysis.exampleHindi,
+    phonetic: teacherAnalysis.phonetic || word,
+    isContextCertain: false,
     source: "Offline"
   };
 }

@@ -789,7 +789,7 @@ html, body {
 .meaning-popup {
   position: fixed;
   z-index: 999;
-  width: min(340px, calc(100vw - 24px));
+  width: min(380px, calc(100vw - 24px));
   padding: 16px 18px 14px;
   background: rgba(255, 255, 255, 0.98);
   border: 1px solid #bfd7f7;
@@ -797,7 +797,7 @@ html, body {
   box-shadow: var(--shadow-popup);
   backdrop-filter: blur(14px);
   animation: popup-fade 0.16s cubic-bezier(0.16, 1, 0.3, 1);
-  max-height: min(72vh, 460px);
+  max-height: min(78vh, 540px);
   overflow-y: auto;
   line-height: normal;
 }
@@ -878,6 +878,126 @@ html, body {
   min-width: 0;
 }
 
+.badge-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 2px;
+}
+
+.pos-pill {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 5px;
+  padding: 1.5px 6px;
+  letter-spacing: 0.3px;
+  text-transform: capitalize;
+  line-height: 1.4;
+}
+
+.pos-noun {
+  background: #e8f1fd;
+  color: #1558b0;
+  border: 1px solid #bfd8f9;
+}
+
+.pos-verb {
+  background: #eaf7ee;
+  color: #137333;
+  border: 1px solid #c2e7cc;
+}
+
+.pos-adjective {
+  background: #f3e8fd;
+  color: #7627bb;
+  border: 1px solid #e1c5f8;
+}
+
+.pos-adverb {
+  background: #fef3e0;
+  color: #b06000;
+  border: 1px solid #f9d8a0;
+}
+
+.pos-preposition {
+  background: #e2f6f7;
+  color: #0a6f77;
+  border: 1px solid #b2e4e7;
+}
+
+.pos-conjunction {
+  background: #ebefff;
+  color: #2c3ec7;
+  border: 1px solid #c5cffd;
+}
+
+.pos-pronoun {
+  background: #fbe8ec;
+  color: #a61b36;
+  border: 1px solid #f6c0cc;
+}
+
+.pos-interjection {
+  background: #fce8f3;
+  color: #991b68;
+  border: 1px solid #f7bede;
+}
+
+.pos-uncertain {
+  background: #f1f3f4;
+  color: #5f6368;
+  border: 1px solid #dadce0;
+}
+
+.conf-badge {
+  font-size: 9.5px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.conf-badge.ok {
+  background: #eaf7ee;
+  color: #137333;
+}
+
+.conf-badge.low {
+  background: #fef0f0;
+  color: #c5221f;
+  border: 1px solid #f5c2c2;
+  font-weight: 700;
+}
+
+.ocr-low-alert {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: #fef7e0;
+  border: 1px solid #f9ab00;
+  color: #7e3900;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  margin: 8px 0 4px;
+}
+
+.word-title-row {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.phonetic-guide {
+  font-size: 12px;
+  color: #4b6a97;
+  font-style: italic;
+  font-family: inherit;
+}
+
 .type-badge {
   display: inline-block;
   font-size: 10px;
@@ -887,9 +1007,7 @@ html, body {
   background: #e6f0fe;
   color: #1260cb;
   border-radius: 4px;
-  padding: 2px 6px;
-  align-self: flex-start;
-  margin-bottom: 3px;
+  padding: 1.5px 6px;
 }
 
 .word-block strong {
@@ -927,12 +1045,139 @@ html, body {
 /* Main Meaning in Hindi */
 .main-meaning {
   font-family: 'Noto Sans Devanagari', sans-serif;
-  font-size: 26px;
+  font-size: 25px;
   font-weight: 700;
   color: #0d326f;
-  margin: 14px 0 8px;
+  margin: 10px 0 6px;
   letter-spacing: -0.3px;
   overflow-wrap: anywhere;
+}
+
+/* In-Context Meaning Distinction */
+.context-distinction {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  background: #f0f6ff;
+  border-left: 3px solid #1a73e8;
+  padding: 7px 10px;
+  border-radius: 0 8px 8px 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: #174ea6;
+  margin: 8px 0;
+}
+
+.distinction-icon {
+  flex-shrink: 0;
+  font-size: 13px;
+}
+
+/* Original PDF Context Sentence */
+.pdf-sentence-box {
+  background: #f8fafd;
+  border: 1px solid #dbe6f5;
+  border-radius: 8px;
+  padding: 8px 11px;
+  margin: 9px 0;
+}
+
+.sentence-tag {
+  font-size: 10px;
+  font-weight: 700;
+  color: #4b6a97;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 3px;
+}
+
+.sentence-text {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #1f2937;
+  margin: 0;
+}
+
+.pdf-word-highlight {
+  background: #ffe082;
+  color: #1f2937;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-weight: 700;
+}
+
+/* Vocabulary Teacher Insight Cards */
+.teacher-card {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 9px 0;
+}
+
+.teacher-section {
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.section-title {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  margin-bottom: 3px;
+}
+
+.grammar-section {
+  background: #f1f6fd;
+  border-left: 3px solid #4285f4;
+}
+
+.grammar-section .section-title {
+  color: #174ea6;
+}
+
+.grammar-section .section-body {
+  color: #202124;
+  margin: 0;
+}
+
+.hinglish-section {
+  background: #fef8eb;
+  border-left: 3px solid #f9ab00;
+}
+
+.hinglish-section .section-title {
+  color: #7e3900;
+}
+
+.hinglish-section .section-body {
+  color: #202124;
+  margin: 0;
+  font-family: inherit;
+}
+
+.example-section {
+  background: #f6faf6;
+  border-left: 3px solid #34a853;
+}
+
+.example-section .section-title {
+  color: #137333;
+}
+
+.example-en {
+  font-size: 12px;
+  font-weight: 600;
+  color: #202124;
+  margin: 0 0 2px 0;
+}
+
+.example-hi {
+  font-size: 12px;
+  color: #374151;
+  font-family: 'Noto Sans Devanagari', sans-serif;
+  margin: 0;
 }
 
 .definition {
@@ -1336,7 +1581,7 @@ html, body {
     border-bottom: 0 !important;
     border-top: 1px solid #bfd7f7 !important;
     box-shadow: 0 -8px 30px rgba(10, 30, 60, 0.22) !important;
-    max-height: 48vh !important;
+    max-height: 52vh !important;
     padding: 10px 16px max(16px, env(safe-area-inset-bottom, 16px)) !important;
     animation: sheet-slide-up 0.22s cubic-bezier(0.16, 1, 0.3, 1) !important;
     z-index: 1001 !important;

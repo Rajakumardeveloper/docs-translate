@@ -407,6 +407,139 @@ async function main() {
     assert.strictEqual(scaleDesktop, 2.0, "Scale for 1000px page must be exactly 2.0x (2000px width)");
   });
 
+  // -------------------------------------------------------------------
+  // TEST S: Context-Aware Grammar Disambiguation for Polysemous Words
+  // -------------------------------------------------------------------
+  await runAsyncTest("Test S: Context-Aware Grammar Disambiguation (present, book, light, run, fast)", async () => {
+    // 1. present
+    const presNoun = await lookupText("present", null, "He gave her a birthday present.");
+    assert.strictEqual(presNoun.pos, "Noun", "present in 'birthday present' must be Noun");
+    assert.ok(presNoun.meaning.includes("उपहार"), "present as Noun must mean उपहार");
+
+    const presAdj = await lookupText("present", null, "The present crisis is severe.");
+    assert.strictEqual(presAdj.pos, "Adjective", "present in 'present crisis' must be Adjective");
+    assert.ok(presAdj.meaning.includes("वर्तमान"), "present as Adjective must mean वर्तमान");
+
+    const presVerb = await lookupText("present", null, "The Minister will present the budget.");
+    assert.strictEqual(presVerb.pos, "Verb", "present after 'will' must be Verb");
+    assert.ok(presVerb.meaning.includes("प्रस्तुत"), "present as Verb must mean प्रस्तुत करना");
+
+    // 2. book
+    const bookNoun = await lookupText("book", null, "I bought a new book.");
+    assert.strictEqual(bookNoun.pos, "Noun", "book in 'a new book' must be Noun");
+
+    const bookVerb = await lookupText("book", null, "She wants to book a flight.");
+    assert.strictEqual(bookVerb.pos, "Verb", "book in 'to book' must be Verb");
+
+    // 3. light
+    const lightNoun = await lookupText("light", null, "Turn on the light.");
+    assert.strictEqual(lightNoun.pos, "Noun", "light after 'the' must be Noun");
+
+    const lightAdj = await lookupText("light", null, "It was a light bag.");
+    assert.strictEqual(lightAdj.pos, "Adjective", "light in 'light bag' must be Adjective");
+
+    const lightVerb = await lookupText("light", null, "They will light the fire.");
+    assert.strictEqual(lightVerb.pos, "Verb", "light after 'will' must be Verb");
+
+    // 4. fast
+    const fastNoun = await lookupText("fast", null, "He kept a religious fast.");
+    assert.strictEqual(fastNoun.pos, "Noun", "fast after 'religious' must be Noun");
+
+    const fastAdj = await lookupText("fast", null, "He is a fast runner.");
+    assert.strictEqual(fastAdj.pos, "Adjective", "fast modifying runner must be Adjective");
+
+    const fastAdv = await lookupText("fast", null, "She drives very fast.");
+    assert.strictEqual(fastAdv.pos, "Adverb", "fast modifying drives must be Adverb");
+
+    const fastVerb = await lookupText("fast", null, "Devotees fast today.");
+    assert.strictEqual(fastVerb.pos, "Verb", "fast after subject devotees must be Verb");
+
+    // 5. run
+    const runNoun = await lookupText("run", null, "He went for a morning run.");
+    assert.strictEqual(runNoun.pos, "Noun", "run after 'morning' must be Noun");
+
+    const runVerb = await lookupText("run", null, "The children run every morning.");
+    assert.strictEqual(runVerb.pos, "Verb", "run after 'children' must be Verb");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST T: Honest Handling of Insufficient Context
+  // -------------------------------------------------------------------
+  await runAsyncTest("Test T: Honest handling of insufficient context for polysemous words", async () => {
+    // Isolated lookup of polysemous word without context
+    const isolated = await lookupText("present", null, "");
+    assert.strictEqual(isolated.pos, "Uncertain", "Isolated polysemous word must be labeled Uncertain");
+    assert.strictEqual(isolated.isContextCertain, false, "Must not claim certainty without context");
+    assert.ok(isolated.contextDistinction.includes("Noun, Verb या Adjective"), "Must honestly explain ambiguity");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST U: 9-Part English-to-Hindi Vocabulary Teacher Card Payload
+  // -------------------------------------------------------------------
+  await runAsyncTest("Test U: Complete 9-part Vocabulary Teacher Card payload", async () => {
+    const res = await lookupText("reforms", null, "The government introduced economic reforms.");
+    assert.ok(res, "Result must not be null");
+
+    // Component 1: Selected word
+    assert.strictEqual(res.word.toLowerCase(), "reforms");
+    // Component 2: Hindi meaning appropriate to sentence
+    assert.ok(res.meaning && res.meaning.length > 0);
+    // Component 3: Part of speech
+    assert.ok(res.pos, "Part of speech must be provided");
+    assert.ok(["Noun", "Verb", "Adjective", "Adverb", "Pronoun", "Preposition", "Conjunction", "Interjection"].includes(res.pos));
+    // Component 4: Meaning distinction in context
+    assert.ok(res.contextDistinction && res.contextDistinction.length > 0);
+    // Component 5: Original sentence from PDF
+    assert.ok(res.sentence && res.sentence.includes("economic reforms"));
+    // Component 6: Beginner grammar explanation
+    assert.ok(res.grammarExplanation && res.grammarExplanation.length > 0);
+    // Component 7: Hinglish explanation
+    assert.ok(res.hinglishExplanation && res.hinglishExplanation.length > 0);
+    // Component 8: Example sentence
+    assert.ok(res.exampleSentence && res.exampleSentence.length > 0);
+    // Component 9: Pronunciation (IPA or phonetic)
+    assert.ok(res.ipa && res.ipa.length > 0);
+  });
+
+  // -------------------------------------------------------------------
+  // TEST V: Surrounding Sentence Extraction Across Multi-Span Elements
+  // -------------------------------------------------------------------
+  runTest("Test V: Multi-span sentence boundary extraction in PDF textLayer", () => {
+    // Create mock DOM spans inside a mock textLayer
+    const span1 = { textContent: "The Prime Minister announced " };
+    const span2 = { textContent: "major economic " };
+    const span3 = { textContent: "reforms during the summit. " };
+    const span4 = { textContent: "This will attract investments." };
+    const allSpans = [span1, span2, span3, span4];
+
+    const mockTextLayer = {
+      querySelectorAll: (sel) => (sel === "span" ? allSpans : [])
+    };
+    span1.closest = () => mockTextLayer;
+    span2.closest = () => mockTextLayer;
+    span3.closest = () => mockTextLayer;
+    span4.closest = () => mockTextLayer;
+
+    const mockRange = {
+      collapsed: false,
+      toString: () => "reforms",
+      startContainer: { nodeType: 3, parentElement: span3, textContent: "reforms during the summit. " },
+      getBoundingClientRect: () => ({ left: 200, top: 150, width: 60, height: 18 })
+    };
+
+    const sel = expandRangeToSelection(mockRange);
+    assert.ok(sel, "Selection must succeed");
+    assert.strictEqual(sel.text, "reforms");
+    assert.ok(
+      sel.sentence.includes("The Prime Minister announced major economic reforms during the summit."),
+      `Extracted sentence must cover complete sentence boundaries: ${sel.sentence}`
+    );
+    assert.ok(
+      !sel.sentence.includes("This will attract investments"),
+      "Extracted sentence must not bleed into succeeding sentences"
+    );
+  });
+
   console.log("\n-------------------------------------------------");
   if (testsFailed > 0) {
     console.error(`RESULTS: ${testsPassed} passed, ${testsFailed} failed.`);

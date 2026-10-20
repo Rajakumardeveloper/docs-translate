@@ -37,6 +37,29 @@ function escapeRegex(string) {
   return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function highlightTargetWord(sentence, targetWord) {
+  if (!sentence || !targetWord) return sentence;
+  const cleanWord = targetWord.trim();
+  if (!cleanWord) return sentence;
+  try {
+    const escaped = escapeRegex(cleanWord);
+    const regex = new RegExp(`\\b(${escaped})\\b`, "gi");
+    const parts = sentence.split(regex);
+    if (parts.length <= 1) return sentence;
+    return parts.map((part, i) =>
+      regex.test(part) ? (
+        <mark key={i} className="pdf-word-highlight">
+          {part}
+        </mark>
+      ) : (
+        part
+      )
+    );
+  } catch {
+    return sentence;
+  }
+}
+
 export default function App() {
   // Document state
   const [file, setFile] = useState(null);
@@ -182,6 +205,7 @@ export default function App() {
     let rect = null;
     let sentence = "";
     let type = "word";
+    let ocrConfidence = undefined;
 
     if (typeof item === "string") {
       text = normalizeSelectionText(item);
@@ -190,6 +214,7 @@ export default function App() {
       rect = item.rect || null;
       sentence = item.sentence || "";
       type = item.type || (text.includes(" ") ? "phrase" : "word");
+      ocrConfidence = item.ocrConfidence;
     }
 
     // 1. Safety check: Trim whitespace and return early if selection is empty
@@ -256,6 +281,7 @@ export default function App() {
       meaning: initialType === "word" ? "अर्थ खोज रहे हैं…" : "अनुवाद कर रहे हैं… (Translating phrase…)",
       alternatives: [initialType === "word" ? "अर्थ खोज रहे हैं…" : "अनुवाद कर रहे हैं…"],
       sentence,
+      ocrConfidence,
       isError: false
     });
     setBusy(true);
@@ -264,7 +290,7 @@ export default function App() {
       const res = await lookupText(text, signal, sentence);
       if (!signal.aborted && currentReqId === requestIdRef.current) {
         if (res) {
-          setEntry({ ...res, isError: false });
+          setEntry({ ...res, ocrConfidence, isError: false });
           setInteractionState("showing-result");
           if (rect) {
             setPopupPos(calculatePopupPosition(rect, 360, 260));
@@ -281,6 +307,7 @@ export default function App() {
           meaning: "अनुवाद सेवा उपलब्ध नहीं है (नेटवर्क त्रुटि)।",
           alternatives: ["अनुवाद सेवा उपलब्ध नहीं है (नेटवर्क त्रुटि)।"],
           sentence,
+          ocrConfidence,
           isError: true
         });
         setInteractionState("showing-result");
@@ -597,6 +624,11 @@ export default function App() {
       if (ocrSpan && ocrSpan.getAttribute("data-word")) {
         const word = ocrSpan.getAttribute("data-word");
         const clean = cleanSingleWord(word);
+        const idxStr = ocrSpan.getAttribute("data-idx");
+        const confStr = ocrSpan.getAttribute("data-conf");
+        const idx = idxStr !== null ? parseInt(idxStr, 10) : -1;
+        const ocrConfidence = confStr !== null ? parseInt(confStr, 10) : 100;
+
         if (clean && clean.length >= 2) {
           const rect = ocrSpan.getBoundingClientRect();
           const currentSig = `${clean.toLowerCase()}@${Math.round(rect.left)},${Math.round(rect.top)}`;
@@ -604,12 +636,22 @@ export default function App() {
             return;
           }
 
+          // Reconstruct surrounding sentence from sibling OCR words
+          let ocrSentence = "";
+          if (idx >= 0 && ocrWords.length > 0) {
+            const startI = Math.max(0, idx - 12);
+            const endI = Math.min(ocrWords.length, idx + 13);
+            const windowWords = ocrWords.slice(startI, endI).map(w => w.clean || w.text);
+            ocrSentence = windowWords.join(" ").trim();
+          }
+
           openMeaning({
             type: "word",
             text: clean,
             wordCount: 1,
             rect,
-            sentence: ""
+            sentence: ocrSentence,
+            ocrConfidence
           });
           return;
         }
@@ -1141,7 +1183,9 @@ export default function App() {
                             height: `${heightPct}%`
                           }}
                           data-word={item.clean}
-                          title={`“${item.clean}” — Click for meaning or drag across words to translate phrase`}
+                          data-idx={idx}
+                          data-conf={Math.round(item.confidence || 0)}
+                          title={`“${item.clean}” (OCR: ${Math.round(item.confidence || 0)}%) — Click for meaning or drag to select`}
                         >
                           {item.text}{" "}
                         </span>
@@ -1182,7 +1226,7 @@ export default function App() {
         )}
       </main>
 
-      {/* Floating Hindi Dictionary & Phrase Translation Popup (or Mobile Bottom Sheet) */}
+      {/* Floating English-to-Hindi Vocabulary Teacher Card & Translation Popup (or Mobile Bottom Sheet) */}
       {entry && (
         <div
           ref={popupRef}
@@ -1194,7 +1238,7 @@ export default function App() {
             "--arrow-x": `${popupPos.arrowX}px`
           }}
           role="dialog"
-          aria-label={`Hindi Meaning of ${entry.text || entry.word}`}
+          aria-label={`Vocabulary Teacher: ${entry.text || entry.word}`}
         >
           {/* Mobile Bottom Sheet Drag Handle */}
           <div className="sheet-handle" aria-hidden="true" />
@@ -1211,13 +1255,30 @@ export default function App() {
             </button>
 
             <div className="word-block">
-              {entry.type && entry.type !== "word" && (
-                <span className="type-badge">
-                  {entry.type === "sentence" ? "Sentence Translation" : "Phrase Translation"}
-                </span>
-              )}
-              <strong>{entry.text || entry.word}</strong>
-              {entry.ipa ? <small>{entry.ipa}</small> : null}
+              <div className="badge-row">
+                {entry.pos && (
+                  <span className={`pos-pill pos-${(entry.pos || "").toLowerCase()}`} title={entry.posHindi || entry.pos}>
+                    {entry.posHindi || entry.pos}
+                  </span>
+                )}
+                {entry.type && entry.type !== "word" && (
+                  <span className="type-badge">
+                    {entry.type === "sentence" ? "Sentence" : "Phrase"}
+                  </span>
+                )}
+                {entry.ocrConfidence !== undefined && (
+                  <span className={`conf-badge ${entry.ocrConfidence < 45 ? "low" : "ok"}`}>
+                    OCR {entry.ocrConfidence}%
+                  </span>
+                )}
+              </div>
+              <div className="word-title-row">
+                <strong>{entry.text || entry.word}</strong>
+                {entry.phonetic && entry.phonetic !== (entry.text || entry.word) && (
+                  <span className="phonetic-guide" title="Readable pronunciation">"{entry.phonetic}"</span>
+                )}
+              </div>
+              {entry.ipa ? <small className="ipa-text">{entry.ipa}</small> : null}
             </div>
 
             <button
@@ -1229,6 +1290,14 @@ export default function App() {
               <X size={18} />
             </button>
           </div>
+
+          {/* Low OCR Confidence Warning Banner */}
+          {entry.ocrConfidence !== undefined && entry.ocrConfidence < 45 && (
+            <div className="ocr-low-alert" role="alert">
+              <AlertCircle size={15} />
+              <span>OCR सटीकता कम है ({entry.ocrConfidence}%)। यदि शब्द सही नहीं है, तो कृपया दोबारा चुनें।</span>
+            </div>
+          )}
 
           {/* Main Meaning / Translation or Error with Retry */}
           {entry.isError ? (
@@ -1248,12 +1317,57 @@ export default function App() {
             </div>
           )}
 
+          {/* In-Context Meaning Distinction */}
+          {entry.contextDistinction && !entry.isError && (
+            <div className="context-distinction">
+              <span className="distinction-icon">📌</span>
+              <span>{entry.contextDistinction}</span>
+            </div>
+          )}
+
+          {/* Original Sentence from PDF with Target Word Highlighted */}
+          {entry.sentence && !entry.isError && (
+            <div className="pdf-sentence-box">
+              <div className="sentence-tag">📄 PDF Sentence:</div>
+              <p className="sentence-text">
+                {highlightTargetWord(entry.sentence, entry.text || entry.word)}
+              </p>
+            </div>
+          )}
+
+          {/* Vocabulary Teacher Insights (Grammar Role, Hinglish, Example) */}
+          {!entry.isError && (entry.grammarExplanation || entry.hinglishExplanation || entry.exampleSentence) && (
+            <div className="teacher-card">
+              {entry.grammarExplanation && (
+                <div className="teacher-section grammar-section">
+                  <div className="section-title">💡 व्याकरण भूमिका (Grammar Role)</div>
+                  <p className="section-body">{entry.grammarExplanation}</p>
+                </div>
+              )}
+
+              {entry.hinglishExplanation && (
+                <div className="teacher-section hinglish-section">
+                  <div className="section-title">🇮🇳 Hinglish Explanation</div>
+                  <p className="section-body">{entry.hinglishExplanation}</p>
+                </div>
+              )}
+
+              {entry.exampleSentence && (
+                <div className="teacher-section example-section">
+                  <div className="section-title">📝 उदाहरण (Example)</div>
+                  <p className="example-en">"{entry.exampleSentence}"</p>
+                  {entry.exampleHindi && <p className="example-hi">↳ {entry.exampleHindi}</p>}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* English definition if available */}
           {entry.definition && !entry.isError && <p className="definition">{entry.definition}</p>}
 
           {/* Alternative Meanings Pills (only when multiple alternatives exist) */}
           {entry.alternatives && entry.alternatives.length > 1 && !entry.isError && (
-            <>
+            <div className="alt-section">
               <div className="other-label">Other meanings:</div>
               <div className="alternatives">
                 {entry.alternatives.map((alt, i) => (
@@ -1268,7 +1382,7 @@ export default function App() {
                   </button>
                 ))}
               </div>
-            </>
+            </div>
           )}
 
           {/* Footer with arrows & position indicator if multiple alternatives exist */}
@@ -1296,16 +1410,9 @@ export default function App() {
             </div>
           )}
 
-          {/* Context sentence if available */}
-          {entry.sentence && (
-            <div className="context-line" title="Context sentence">
-              {entry.sentence}
-            </div>
-          )}
-
           {busy && (
             <div className="lookup-note">
-              {entry.type === "word" ? "अर्थ खोज रहे हैं…" : "अनुवाद कर रहे हैं…"}
+              {entry.type === "word" ? "विश्लेषण जारी है…" : "अनुवाद कर रहे हैं…"}
             </div>
           )}
         </div>

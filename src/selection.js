@@ -29,6 +29,86 @@ export function normalizeSelectionText(raw) {
   return text;
 }
 
+// Extract surrounding sentence boundary from PDF textLayer spans or local context
+export function extractSurroundingSentence(range, normalizedText) {
+  if (!range) return "";
+
+  try {
+    // 1. Identify start node and container
+    const isTextNode = range.startContainer?.nodeType === (typeof Node !== "undefined" ? Node.TEXT_NODE : 3);
+    const startSpan = isTextNode ? range.startContainer.parentElement : range.startContainer;
+    if (!startSpan) return "";
+
+    // 2. Check if inside PDF.js text layer
+    const textLayer = startSpan.closest?.(".textLayer");
+    if (textLayer) {
+      // PDF.js text layer contains sibling <span> elements in reading order
+      const allSpans = Array.from(textLayer.querySelectorAll("span"));
+      const currentIdx = allSpans.indexOf(startSpan);
+
+      if (currentIdx !== -1) {
+        // Gather a window of spans around current selection (up to 15 spans before and after)
+        const windowStart = Math.max(0, currentIdx - 15);
+        const windowEnd = Math.min(allSpans.length, currentIdx + 16);
+        const windowSpans = allSpans.slice(windowStart, windowEnd);
+
+        // Concatenate text while fixing line-break hyphenations
+        let combined = "";
+        for (const s of windowSpans) {
+          const t = (s.textContent || "").trim();
+          if (t) {
+            combined += (combined ? " " : "") + t;
+          }
+        }
+        // Normalize hyphenated words across lines (e.g., "inves- tigation" -> "investigation")
+        combined = combined.replace(/([A-Za-z]+)-\s+([A-Za-z]+)/g, "$1$2");
+        combined = combined.replace(/\s+/g, " ").trim();
+
+        // Find position of normalized target text in combined window
+        const targetClean = (normalizedText || "").toLowerCase();
+        const foundIdx = combined.toLowerCase().indexOf(targetClean);
+
+        if (foundIdx !== -1) {
+          // Look backwards for sentence start (punctuation followed by space, or start of string)
+          const textBefore = combined.slice(0, foundIdx);
+          const startMatches = [...textBefore.matchAll(/[.?!]\s+/g)];
+          const sentenceStartIndex = startMatches.length > 0
+            ? startMatches[startMatches.length - 1].index + startMatches[startMatches.length - 1][0].length
+            : 0;
+
+          // Look forwards for sentence end
+          const textAfter = combined.slice(foundIdx + targetClean.length);
+          const endMatch = textAfter.match(/[.?!](\s|$)/);
+          const sentenceEndIndex = endMatch
+            ? foundIdx + targetClean.length + endMatch.index + 1
+            : combined.length;
+
+          const sentence = combined.slice(sentenceStartIndex, sentenceEndIndex).trim();
+          if (sentence.length >= targetClean.length) {
+            return sentence;
+          }
+        }
+      }
+    }
+
+    // 3. Fallback to immediate parent/container text
+    const localText = (startSpan.textContent || "").replace(/\s+/g, " ").trim();
+    if (localText && localText.length >= (normalizedText?.length || 0)) {
+      const idx = localText.toLowerCase().indexOf((normalizedText || "").toLowerCase());
+      if (idx !== -1) {
+        const sStart = Math.max(0, idx - 60);
+        const sEnd = Math.min(localText.length, idx + (normalizedText?.length || 0) + 80);
+        return localText.slice(sStart, sEnd).trim();
+      }
+      return localText;
+    }
+  } catch (err) {
+    console.warn("Sentence extraction fallback:", err);
+  }
+
+  return "";
+}
+
 // Expand and extract complete selection (supports both single words AND multi-word phrases)
 export function expandRangeToSelection(range) {
   if (!range || range.collapsed) return null;
@@ -51,19 +131,24 @@ export function expandRangeToSelection(range) {
 
   const rect = range.getBoundingClientRect();
 
-  // Extract surrounding context locally from the immediate container without reading full-page textLayer.innerText
-  const isTextNode = range.startContainer?.nodeType === (typeof Node !== "undefined" ? Node.TEXT_NODE : 3);
-  const localContainer = isTextNode ? range.startContainer.parentElement : range.startContainer;
-  const localText = (localContainer?.textContent || "").replace(/\s+/g, " ").trim();
-  let sentence = "";
-  if (localText && localText.length > normalized.length) {
-    const idx = localText.toLowerCase().indexOf(normalized.toLowerCase());
-    if (idx !== -1) {
-      const sStart = Math.max(0, idx - 50);
-      const sEnd = Math.min(localText.length, idx + normalized.length + 70);
-      sentence = localText.slice(sStart, sEnd).trim();
-    } else {
-      sentence = localText.slice(0, 160).trim();
+  // Extract clean surrounding sentence from PDF textLayer spans or local context
+  const extractedSentence = extractSurroundingSentence(range, normalized);
+
+  // Fallback to local container if extractedSentence is empty
+  let sentence = extractedSentence;
+  if (!sentence) {
+    const isTextNode = range.startContainer?.nodeType === (typeof Node !== "undefined" ? Node.TEXT_NODE : 3);
+    const localContainer = isTextNode ? range.startContainer.parentElement : range.startContainer;
+    const localText = (localContainer?.textContent || "").replace(/\s+/g, " ").trim();
+    if (localText && localText.length > normalized.length) {
+      const idx = localText.toLowerCase().indexOf(normalized.toLowerCase());
+      if (idx !== -1) {
+        const sStart = Math.max(0, idx - 50);
+        const sEnd = Math.min(localText.length, idx + normalized.length + 70);
+        sentence = localText.slice(sStart, sEnd).trim();
+      } else {
+        sentence = localText.slice(0, 160).trim();
+      }
     }
   }
 
@@ -87,7 +172,7 @@ export function expandRangeToSelection(range) {
       text: singleClean,
       wordCount: 1,
       rect,
-      sentence
+      sentence: sentence || ""
     };
   }
 

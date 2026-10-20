@@ -6,6 +6,7 @@ import fs from "node:fs";
 import { createWorker } from "tesseract.js";
 import { cleanSingleWord, normalizeSelectionText, expandRangeToSelection } from "./src/selection.js";
 import { BUILTIN_DICTIONARY, lookupText } from "./src/dictionary.js";
+import { disambiguatePOS } from "./src/grammarEngine.js";
 
 // Minimal polyfill for DOM constants in Node
 if (typeof globalThis.Node === "undefined") {
@@ -363,6 +364,138 @@ function runGrammarClassificationBenchmark() {
 }
 
 // ------------------------------------------------------------------------------
+// BENCHMARK 2B: CONTEXT-AWARE POS DISAMBIGUATION BENCHMARK (50 Trials)
+// ------------------------------------------------------------------------------
+function runContextPOSBenchmark() {
+  console.log("--------------------------------------------------------------------------------");
+  console.log(" [BENCHMARK 2B] Context-Aware POS Disambiguation & Semantic Roles (N = 50)");
+  console.log("--------------------------------------------------------------------------------");
+
+  const posTrials = [
+    // 1. Polysemous: 'present'
+    { word: "present", sentence: "He gave her a lovely birthday present.", expectedPOS: "Noun" },
+    { word: "present", sentence: "The present economic crisis requires urgent attention.", expectedPOS: "Adjective" },
+    { word: "present", sentence: "The Finance Minister will present the annual budget.", expectedPOS: "Verb" },
+
+    // 2. Polysemous: 'book'
+    { word: "book", sentence: "I bought a fascinating new book yesterday.", expectedPOS: "Noun" },
+    { word: "book", sentence: "They decided to book flight tickets early.", expectedPOS: "Verb" },
+
+    // 3. Polysemous: 'light'
+    { word: "light", sentence: "Turn on the light in the hallway.", expectedPOS: "Noun" },
+    { word: "light", sentence: "She carried a light travel bag.", expectedPOS: "Adjective" },
+    { word: "light", sentence: "They will light the ceremonial lamp.", expectedPOS: "Verb" },
+
+    // 4. Polysemous: 'fast'
+    { word: "fast", sentence: "He kept a religious fast during Navratri.", expectedPOS: "Noun" },
+    { word: "fast", sentence: "India launched a network of fast trains.", expectedPOS: "Adjective" },
+    { word: "fast", sentence: "She typed very fast to meet the deadline.", expectedPOS: "Adverb" },
+    { word: "fast", sentence: "Devotees fast today during the holy festival.", expectedPOS: "Verb" },
+
+    // 5. Polysemous: 'run'
+    { word: "run", sentence: "He went for a quick morning run.", expectedPOS: "Noun" },
+    { word: "run", sentence: "The children run every morning in the park.", expectedPOS: "Verb" },
+
+    // 6. Polysemous: 'record'
+    { word: "record", sentence: "The athlete set a world record in sprinting.", expectedPOS: "Noun" },
+    { word: "record", sentence: "Security cameras record all visitors entering the building.", expectedPOS: "Verb" },
+
+    // 7. Polysemous: 'court'
+    { word: "court", sentence: "The Supreme Court dismissed the appeal today.", expectedPOS: "Noun" },
+    { word: "court", sentence: "Political leaders court young voters before elections.", expectedPOS: "Verb" },
+
+    // 8. Polysemous: 'state'
+    { word: "state", sentence: "The state government approved the infrastructure package.", expectedPOS: "Noun" },
+    { word: "state", sentence: "Official documents state the regulations clearly.", expectedPOS: "Verb" },
+
+    // 9. Polysemous: 'demand'
+    { word: "demand", sentence: "Domestic consumer demand drove economic growth.", expectedPOS: "Noun" },
+    { word: "demand", sentence: "Workers demand better wages and safety gear.", expectedPOS: "Verb" },
+
+    // 10. Polysemous: 'reforms'
+    { word: "reforms", sentence: "The government introduced structural reforms.", expectedPOS: "Noun" },
+    { word: "reforms", sentence: "The bill reforms banking regulatory oversight.", expectedPOS: "Verb" },
+
+    // 11. Suffix & Morphological Nouns (5 cases)
+    { word: "inflation", sentence: "Headline inflation eased this month.", expectedPOS: "Noun" },
+    { word: "sovereignty", sentence: "National sovereignty must be defended.", expectedPOS: "Noun" },
+    { word: "governance", sentence: "Good governance improves public service delivery.", expectedPOS: "Noun" },
+    { word: "arbitration", sentence: "International commercial arbitration resolves disputes.", expectedPOS: "Noun" },
+    { word: "integrity", sentence: "Judicial integrity inspires public confidence.", expectedPOS: "Noun" },
+
+    // 12. Suffix & Morphological Verbs (5 cases)
+    { word: "scrutinize", sentence: "Parliamentary panels scrutinize proposed bills.", expectedPOS: "Verb" },
+    { word: "accelerate", sentence: "Digital reforms accelerate financial inclusion.", expectedPOS: "Verb" },
+    { word: "implement", sentence: "States must implement environmental norms.", expectedPOS: "Verb" },
+    { word: "strengthen", sentence: "New investments strengthen regional supply chains.", expectedPOS: "Verb" },
+    { word: "safeguard", sentence: "Constitutional checks safeguard personal liberty.", expectedPOS: "Verb" },
+
+    // 13. Suffix & Morphological Adjectives (5 cases)
+    { word: "resilient", sentence: "The banking sector showed resilient performance.", expectedPOS: "Adjective" },
+    { word: "sustainable", sentence: "Sustainable urban mobility requires public funding.", expectedPOS: "Adjective" },
+    { word: "equitable", sentence: "An equitable distribution of resources promotes harmony.", expectedPOS: "Adjective" },
+    { word: "statutory", sentence: "The statutory regulatory body issued fresh guidelines.", expectedPOS: "Adjective" },
+    { word: "comprehensive", sentence: "A comprehensive health policy protects citizens.", expectedPOS: "Adjective" },
+
+    // 14. Adverbs (-ly & manner) (5 cases)
+    { word: "substantially", sentence: "Revenue collections rose substantially this quarter.", expectedPOS: "Adverb" },
+    { word: "deliberately", sentence: "The bench deliberately weighed all constitutional issues.", expectedPOS: "Adverb" },
+    { word: "consistently", sentence: "Export volumes grew consistently over the decade.", expectedPOS: "Adverb" },
+    { word: "unanimously", sentence: "The jury voted unanimously on the verdict.", expectedPOS: "Adverb" },
+    { word: "judicially", sentence: "The matter was judicially resolved.", expectedPOS: "Adverb" },
+
+    // 15. Closed class words: Prepositions & Conjunctions (4 cases)
+    { word: "between", sentence: "Bilateral ties between both nations improved.", expectedPOS: "Preposition" },
+    { word: "through", sentence: "The bill passed through the upper house.", expectedPOS: "Preposition" },
+    { word: "because", sentence: "Exports rose because demand strengthened overseas.", expectedPOS: "Conjunction" },
+    { word: "although", sentence: "Although inflation spiked, growth held steady.", expectedPOS: "Conjunction" },
+
+    // 16. Insufficient Context (Honest Uncertain Handling) (4 cases)
+    { word: "present", sentence: "", expectedPOS: "Uncertain" },
+    { word: "book", sentence: "book", expectedPOS: "Uncertain" },
+    { word: "light", sentence: "", expectedPOS: "Uncertain" },
+    { word: "fast", sentence: "   ", expectedPOS: "Uncertain" }
+  ];
+
+  let passed = 0;
+  let failed = 0;
+  const posStats = {};
+
+  for (const trial of posTrials) {
+    const res = disambiguatePOS(trial.word, trial.sentence);
+    const exp = trial.expectedPOS;
+    if (!posStats[exp]) posStats[exp] = { total: 0, passed: 0 };
+    posStats[exp].total++;
+
+    if (res.pos === exp) {
+      passed++;
+      posStats[exp].passed++;
+    } else {
+      failed++;
+      console.log(`  [POS MISMATCH] "${trial.word}": got ${res.pos}, expected ${exp} (Sentence: "${trial.sentence}")`);
+    }
+  }
+
+  const accuracy = (passed / posTrials.length) * 100;
+  const failureRate = (failed / posTrials.length) * 100;
+
+  console.log(`Total Context-Aware POS Trials:  ${posTrials.length}`);
+  console.log(`Correct POS Determinations:      ${passed}`);
+  console.log(`Incorrect / Ambiguous:           ${failed}`);
+  console.log(`Contextual POS Accuracy:         ${accuracy.toFixed(2)}%`);
+  console.log(`Contextual Error Rate:           ${failureRate.toFixed(2)}%\n`);
+
+  console.log("Breakdown by Grammatical Part of Speech:");
+  for (const [pos, s] of Object.entries(posStats)) {
+    const acc = ((s.passed / s.total) * 100).toFixed(1);
+    console.log(`  - ${pos.padEnd(16)}: ${s.passed}/${s.total} (${acc}%)`);
+  }
+  console.log();
+
+  return { total: posTrials.length, passed, failed, accuracy, failureRate };
+}
+
+// ------------------------------------------------------------------------------
 // BENCHMARK 3: REAL OCR ACCURACY ACROSS SCANS, FONTS & LAYOUTS
 // ------------------------------------------------------------------------------
 async function runOcrAccuracyBenchmark() {
@@ -544,6 +677,7 @@ async function runTranslationBenchmark() {
 async function main() {
   const selRes = runSelectionBenchmark();
   const gramRes = runGrammarClassificationBenchmark();
+  const posRes = runContextPOSBenchmark();
   const ocrRes = await runOcrAccuracyBenchmark();
   const transRes = await runTranslationBenchmark();
 
@@ -552,20 +686,21 @@ async function main() {
   console.log("================================================================================\n");
 
   console.log(`1. Selection Accuracy (Clean Text, Wraps & Edge Bounds): ${selRes.accuracy.toFixed(2)}% (Failure: ${selRes.failureRate.toFixed(2)}%)`);
-  console.log(`2. Grammar-Classification Accuracy (Word / Phrase / Sent): ${gramRes.accuracy.toFixed(2)}% (Error: ${gramRes.failureRate.toFixed(2)}%)`);
+  console.log(`2. Grammar Structure Classification (Word / Phrase / Sent): ${gramRes.accuracy.toFixed(2)}% (Error: ${gramRes.failureRate.toFixed(2)}%)`);
+  console.log(`3. Contextual POS Disambiguation (Sentence Role Accuracy):  ${posRes.accuracy.toFixed(2)}% (Error: ${posRes.failureRate.toFixed(2)}%)`);
 
   const cleanOcr = ocrRes.filter(r => !r.file.includes("rot"));
   const avgCleanOcrAcc = cleanOcr.reduce((a, b) => a + b.wordAccuracy, 0) / cleanOcr.length;
   const avgCleanOcrConf = cleanOcr.reduce((a, b) => a + b.avgConfidence, 0) / cleanOcr.length;
   const rotatedOcr = ocrRes.find(r => r.file.includes("rot"));
 
-  console.log(`3. OCR Word Accuracy (Clean Print & Editorial Fonts):     ${avgCleanOcrAcc.toFixed(2)}% (Avg Conf: ${avgCleanOcrConf.toFixed(1)}%)`);
+  console.log(`4. OCR Word Accuracy (Clean Print & Editorial Fonts):     ${avgCleanOcrAcc.toFixed(2)}% (Avg Conf: ${avgCleanOcrConf.toFixed(1)}%)`);
   if (rotatedOcr) {
     console.log(`   - Skewed / Rotated Scan Accuracy (without deskew):      ${rotatedOcr.wordAccuracy.toFixed(2)}% (Failure/Drop: ${rotatedOcr.lowConfDropRate.toFixed(1)}%)`);
   }
 
-  console.log(`4. Editorial Vocabulary Coverage (Instant Zero-Latency):   ${transRes.editorialCoverage.toFixed(1)}%`);
-  console.log(`5. Fallback Translation Availability:                      ${transRes.liveAccuracy.toFixed(1)}% (Failure: ${transRes.liveFailRate.toFixed(1)}%)`);
+  console.log(`5. Editorial Vocabulary Coverage (Instant Zero-Latency):   ${transRes.editorialCoverage.toFixed(1)}%`);
+  console.log(`6. Fallback Translation Availability:                      ${transRes.liveAccuracy.toFixed(1)}% (Failure: ${transRes.liveFailRate.toFixed(1)}%)`);
   console.log("\n================================================================================");
 }
 
