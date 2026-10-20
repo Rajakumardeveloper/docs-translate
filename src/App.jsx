@@ -88,11 +88,10 @@ export default function App() {
 
   // PDF.js options to support diverse newspaper encodings, CMaps, and standard fonts
   const pdfOptions = useMemo(() => ({
-    cMapUrl: `https://unpkg.com/pdfjs-dist@${pdfjs.version}/cmaps/`,
+    cMapUrl: "/cmaps/",
     cMapPacked: true,
-    standardFontDataUrl: `https://unpkg.com/pdfjs-dist@${pdfjs.version}/standard_fonts/`,
-    enableXfa: true,
-    isEvalSupported: false
+    standardFontDataUrl: "/standard_fonts/",
+    enableXfa: true
   }), []);
 
   // Safely close active dictionary/translation popup and abort any in-flight requests
@@ -409,7 +408,7 @@ export default function App() {
   };
 
   // File upload handler
-  const handleFileChange = (e) => {
+  const handleFileChange = async (e) => {
     const f = e.target.files?.[0];
     if (f) {
       if (f.type !== "application/pdf" && !f.name.toLowerCase().endsWith(".pdf")) {
@@ -420,12 +419,16 @@ export default function App() {
       try {
         window.getSelection()?.removeAllRanges();
       } catch {}
-      setFile(f);
-      setNotice("");
-    }
-    // Reset file input so re-selecting the same file works reliably
-    if (e.target) {
-      e.target.value = "";
+
+      try {
+        const buffer = await f.arrayBuffer();
+        setFile({ data: new Uint8Array(buffer) });
+        setNotice("");
+      } catch (err) {
+        console.warn("ArrayBuffer read fallback:", err);
+        setFile(f);
+        setNotice("");
+      }
     }
   };
 
@@ -1272,6 +1275,9 @@ export default function App() {
         className="hidden-input"
         type="file"
         accept="application/pdf,.pdf"
+        onClick={(e) => {
+          e.target.value = "";
+        }}
         onChange={handleFileChange}
       />
     </div>
