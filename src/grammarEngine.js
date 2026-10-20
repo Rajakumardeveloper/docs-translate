@@ -427,6 +427,7 @@ export function disambiguatePOS(targetWord, contextSentence) {
   const prev1Lower = prev1?.lower || "";
   const prev2Lower = prev2?.lower || "";
   const next1Lower = next1?.lower || "";
+  const next2Lower = next2?.lower || "";
 
   // 0. Check closed-class words early
   if (PREPOSITIONS.has(cleanWord)) {
@@ -539,9 +540,18 @@ export function disambiguatePOS(targetWord, contextSentence) {
     }
   }
 
+  // Check if target word is followed by a relative pronoun ("that", "which", "who", "whom") + verb
+  // e.g. "warnings that led to panic", "reforms that changed India", "officials who testified"
+  if (next1 && ["that", "which", "who", "whom", "whose"].includes(next1Lower)) {
+    if (next2 && (!DETERMINERS.has(next2Lower) || ["led", "caused", "were", "was", "resulted", "sparked", "emerged", "arose"].includes(next2Lower))) {
+      return { pos: PARTS_OF_SPEECH.NOUN, confidence: 0.93, reason: "Noun antecedent of relative clause" };
+    }
+  }
+
   // 9. Imperative sentence start: Word at index 0 followed by determiner/noun
   // e.g. "Book your tickets", "Light the fire", "Present your evidence"
-  if (targetIdx === 0 && next1 && (DETERMINERS.has(next1Lower) || next1Lower === "the" || next1Lower === "your")) {
+  // Imperatives in English are base-form verbs and never end with plural -s or -ings
+  if (targetIdx === 0 && next1 && !cleanWord.endsWith("s") && (["the", "your", "a", "an", "this", "these", "those"].includes(next1Lower) || (next1Lower === "that" && next2 && !["led", "caused", "were", "was", "had", "did", "sparked", "resulted"].includes(next2Lower)))) {
     return { pos: PARTS_OF_SPEECH.VERB, confidence: 0.88, reason: "Imperative sentence head verb" };
   }
 
@@ -573,6 +583,9 @@ export function morphologicalPOS(cleanWord) {
   }
 
   // Noun suffixes
+  if (w.endsWith("ings") && w.length > 5) {
+    return { pos: PARTS_OF_SPEECH.NOUN, confidence: 0.92, reason: "Plural noun suffix '-ings'" };
+  }
   if (/(?:tion|sion|ment|ness|ity|ance|ence|ship|hood|ism|ist|or|er)$/.test(w) && w.length > 4) {
     return { pos: PARTS_OF_SPEECH.NOUN, confidence: 0.85, reason: "Characteristic noun suffix" };
   }

@@ -591,6 +591,86 @@ export const BUILTIN_DICTIONARY = {
     meaning: "राज्य / स्थिति / बयान करना",
     alternatives: ["राज्य", "स्थिति", "दशा", "बयान करना"],
     sentence: "The state government approved the development plan. — राज्य सरकार ने विकास योजना को मंजूरी दी।"
+  },
+  patna: {
+    word: "Patna",
+    ipa: "/ˈpæt.nə/",
+    pos: "Noun",
+    meaning: "पटना",
+    alternatives: ["पटना", "बिहार की राजधानी"],
+    sentence: "Patna is a historic city on the banks of the Ganges. — पटना गंगा नदी के किनारे बसा एक ऐतिहासिक शहर है।"
+  },
+  reddy: {
+    word: "Reddy",
+    ipa: "/ˈred.i/",
+    pos: "Noun",
+    meaning: "रेड्डी",
+    alternatives: ["रेड्डी"],
+    sentence: "Mr. Reddy addressed the gathering yesterday. — श्री रेड्डी ने कल सभा को संबोधित किया।"
+  },
+  delhi: {
+    word: "Delhi",
+    ipa: "/ˈdel.i/",
+    pos: "Noun",
+    meaning: "दिल्ली",
+    alternatives: ["दिल्ली", "राष्ट्रीय राजधानी"],
+    sentence: "New Delhi is the national capital of India. — नई दिल्ली भारत की राष्ट्रीय राजधानी है।"
+  },
+  mumbai: {
+    word: "Mumbai",
+    ipa: "/mʊmˈbaɪ/",
+    pos: "Noun",
+    meaning: "मुंबई",
+    alternatives: ["मुंबई", "महाराष्ट्र की राजधानी"],
+    sentence: "Mumbai is the financial hub of the country. — मुंबई देश का वित्तीय केंद्र है।"
+  },
+  bihar: {
+    word: "Bihar",
+    ipa: "/bɪˈhɑːr/",
+    pos: "Noun",
+    meaning: "बिहार",
+    alternatives: ["बिहार", "बिहार राज्य"],
+    sentence: "Bihar has a rich cultural and historical heritage. — बिहार की सांस्कृतिक और ऐतिहासिक विरासत समृद्ध है।"
+  },
+  actor: {
+    word: "actor",
+    ipa: "/ˈæk.tɚ/",
+    pos: "Noun",
+    meaning: "अभिनेता",
+    alternatives: ["अभिनेता", "नायक", "कलाकार", "पात्र"],
+    sentence: "The popular actor announced a new movie project. — लोकप्रिय अभिनेता ने एक नई फिल्म परियोजना की घोषणा की।"
+  },
+  tiger: {
+    word: "tiger",
+    ipa: "/ˈtaɪ.ɡɚ/",
+    pos: "Noun",
+    meaning: "बाघ",
+    alternatives: ["बाघ", "शेर", "चीता", "ताकतवर व्यक्ति"],
+    sentence: "Project Tiger protects wildlife habitats across India. — प्रोजेक्ट टाइगर पूरे भारत में वन्यजीव आवासों की रक्षा करता है।"
+  },
+  shroff: {
+    word: "Shroff",
+    ipa: "/ʃrɒf/",
+    pos: "Noun",
+    meaning: "श्रॉफ",
+    alternatives: ["श्रॉफ", "सर्राफ", "मुद्रा परिवर्तक"],
+    sentence: "Tiger Shroff is a well-known Indian actor. — टाइगर श्रॉफ एक प्रसिद्ध भारतीय अभिनेता हैं।"
+  },
+  warnings: {
+    word: "warnings",
+    ipa: "/ˈwɔːr.nɪŋz/",
+    pos: "Noun",
+    meaning: "चेतावनियाँ",
+    alternatives: ["चेतावनियाँ", "चेतावनी", "सावधानी के संकेत"],
+    sentence: "Weather warnings were issued before the severe storm. — भीषण तूफान से पहले मौसम की चेतावनियाँ जारी की गई थीं।"
+  },
+  warning: {
+    word: "warning",
+    ipa: "/ˈwɔːr.nɪŋ/",
+    pos: "Noun",
+    meaning: "चेतावनी",
+    alternatives: ["चेतावनी", "पूर्वसूचना", "सावधानी संकेत"],
+    sentence: "The meteorological department issued a flood warning. — मौसम विभाग ने बाढ़ की चेतावनी जारी की।"
   }
 };
 
@@ -617,6 +697,32 @@ function setCache(key, data) {
   try {
     localStorage.setItem(`readhindi_entry_${clean}`, JSON.stringify(data));
   } catch {}
+}
+
+// Reliable fetch with timeout to prevent hung/stuck network calls
+export async function fetchWithTimeout(url, options = {}, timeoutMs = 3500) {
+  const { signal, ...rest } = options;
+  const timeoutController = new AbortController();
+  const timer = setTimeout(() => timeoutController.abort(), timeoutMs);
+
+  let combinedSignal = timeoutController.signal;
+  if (signal) {
+    if (signal.aborted) {
+      clearTimeout(timer);
+      throw new DOMException("Aborted", "AbortError");
+    }
+    signal.addEventListener("abort", () => {
+      clearTimeout(timer);
+      timeoutController.abort();
+    });
+  }
+
+  try {
+    const res = await fetch(url, { ...rest, signal: combinedSignal });
+    return res;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export function cleanLookupWord(rawWord) {
@@ -682,7 +788,7 @@ export async function lookupText(rawText, signal = null, contextSentence = "") {
     // 2. Online Translation Tier 1: Google Translate public API (handles long phrases & sentences)
     try {
       const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=hi&dt=t&dt=bd&dt=rm&q=${encodeURIComponent(normalized)}`;
-      const res = await fetch(url, { signal });
+      const res = await fetchWithTimeout(url, { signal }, 3500);
       if (res.ok) {
         const data = await res.json();
         // Google translate splits sentences into chunks: data[0] = [ [translatedChunk, originalChunk], ... ]
@@ -727,7 +833,7 @@ export async function lookupText(rawText, signal = null, contextSentence = "") {
 
     // 3. Online Translation Tier 2: MyMemory API
     try {
-      const r = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(normalized)}&langpair=en|hi`, { signal });
+      const r = await fetchWithTimeout(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(normalized)}&langpair=en|hi`, { signal }, 3500);
       if (r.ok) {
         const data = await r.json();
         const translated = data?.responseData?.translatedText?.trim();
@@ -907,7 +1013,7 @@ export async function lookupText(rawText, signal = null, contextSentence = "") {
   // 3. Online Fallback Tier 1: Google Translate public single client
   try {
     const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=hi&dt=t&dt=bd&dt=rm&q=${encodeURIComponent(word)}`;
-    const res = await fetch(url, { signal });
+    const res = await fetchWithTimeout(url, { signal }, 3500);
     if (res.ok) {
       const data = await res.json();
       const primary = data?.[0]?.[0]?.[0]?.trim();
@@ -926,7 +1032,7 @@ export async function lookupText(rawText, signal = null, contextSentence = "") {
         }
       }
 
-      if (primary && primary.toLowerCase() !== lower) {
+      if (primary && (primary.toLowerCase() !== lower || /[\u0900-\u097F]/.test(primary))) {
         const result = {
           type: "word",
           text: word,
@@ -959,11 +1065,11 @@ export async function lookupText(rawText, signal = null, contextSentence = "") {
 
   // 4. Online Fallback Tier 2: MyMemory API
   try {
-    const r = await fetch(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(word)}&langpair=en|hi`, { signal });
+    const r = await fetchWithTimeout(`https://api.mymemory.translated.net/get?q=${encodeURIComponent(word)}&langpair=en|hi`, { signal }, 3500);
     if (r.ok) {
       const data = await r.json();
       const translated = data?.responseData?.translatedText?.trim();
-      if (translated && translated.toLowerCase() !== lower && !translated.includes("MYMEMORY WARNING")) {
+      if (translated && (translated.toLowerCase() !== lower || /[\u0900-\u097F]/.test(translated)) && !translated.includes("MYMEMORY WARNING")) {
         const result = {
           type: "word",
           text: word,
@@ -996,7 +1102,7 @@ export async function lookupText(rawText, signal = null, contextSentence = "") {
 
   // 5. English Dictionary API (gives IPA & definition if Hindi API fails)
   try {
-    const r = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(word)}`, { signal });
+    const r = await fetchWithTimeout(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(word)}`, { signal }, 3000);
     if (r.ok) {
       const data = await r.json();
       const phonetic = data?.[0]?.phonetic || data?.[0]?.phonetics?.find(p => p.text)?.text || `/${word}/`;
@@ -1028,17 +1134,19 @@ export async function lookupText(rawText, signal = null, contextSentence = "") {
     if (e.name === "AbortError") throw e;
   }
 
+  // 6. Intelligent Fallback for Proper Nouns / Untranslated Words
+  const isProperNoun = /^[A-Z]/.test(word);
   return {
     type: "word",
     text: word,
     word,
     ipa: teacherAnalysis.ipa || `/${word}/`,
-    meaning: "इस शब्द का हिन्दी अर्थ अभी उपलब्ध नहीं है।",
-    alternatives: ["इस शब्द का हिन्दी अर्थ अभी उपलब्ध नहीं है।"],
-    pos: teacherAnalysis.pos,
-    posHindi: teacherAnalysis.posHindi,
-    posConfidence: teacherAnalysis.posConfidence,
-    contextMeaning: "इस शब्द का हिन्दी अर्थ अभी उपलब्ध नहीं है।",
+    meaning: isProperNoun ? word : "इस शब्द का हिन्दी अर्थ अभी उपलब्ध नहीं है।",
+    alternatives: isProperNoun ? [word] : ["इस शब्द का हिन्दी अर्थ अभी उपलब्ध नहीं है।"],
+    pos: isProperNoun ? "Noun" : teacherAnalysis.pos,
+    posHindi: isProperNoun ? "संज्ञा (Proper Noun)" : teacherAnalysis.posHindi,
+    posConfidence: isProperNoun ? 0.9 : teacherAnalysis.posConfidence,
+    contextMeaning: isProperNoun ? word : "इस शब्द का हिन्दी अर्थ अभी उपलब्ध नहीं है।",
     contextDistinction: teacherAnalysis.contextDistinction,
     sentence: contextSentence,
     grammarExplanation: teacherAnalysis.grammarExplanation,
@@ -1046,8 +1154,8 @@ export async function lookupText(rawText, signal = null, contextSentence = "") {
     exampleSentence: teacherAnalysis.exampleSentence,
     exampleHindi: teacherAnalysis.exampleHindi,
     phonetic: teacherAnalysis.phonetic || word,
-    isContextCertain: false,
-    source: "Offline"
+    isContextCertain: isProperNoun ? true : false,
+    source: isProperNoun ? "Proper Noun" : "Offline"
   };
 }
 

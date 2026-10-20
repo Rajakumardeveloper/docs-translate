@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Document, Page, pdfjs } from "react-pdf";
 import {
   BookOpen,
@@ -31,7 +32,8 @@ import {
   normalizeSelectionText,
   expandRangeToSelection,
   extractWordAtPoint,
-  calculatePopupPosition
+  calculatePopupPosition,
+  segmentOcrText
 } from "./selection.js";
 
 function escapeRegex(string) {
@@ -116,6 +118,9 @@ export default function App() {
   const justDismissedTimeRef = useRef(0);
   const touchInsidePopupRef = useRef(false);
   const touchEndTimerRef = useRef(null);
+  const activeTargetElRef = useRef(null);
+  const pinchDistRef = useRef(null);
+  const pinchStartScaleRef = useRef(1.0);
 
   // Background OCR Pipeline Refs (Phase 3 & 4)
   const activeOcrPageRef = useRef(null);
@@ -215,6 +220,7 @@ export default function App() {
     let sentence = "";
     let type = "word";
     let ocrConfidence = undefined;
+    let targetEl = null;
 
     if (typeof item === "string") {
       text = normalizeSelectionText(item);
@@ -224,6 +230,7 @@ export default function App() {
       sentence = item.sentence || "";
       type = item.type || (text.includes(" ") ? "phrase" : "word");
       ocrConfidence = item.ocrConfidence;
+      targetEl = item.targetEl || null;
     }
 
     // 1. Safety check: Trim whitespace and return early if selection is empty
@@ -274,6 +281,7 @@ export default function App() {
     abortControllerRef.current = new AbortController();
     const signal = abortControllerRef.current.signal;
 
+    activeTargetElRef.current = targetEl;
     setActiveWordRect(rect);
     const pos = calculatePopupPosition(rect, 320, 160);
     setPopupPos(pos);
@@ -293,6 +301,13 @@ export default function App() {
       isError: false
     });
     setBusy(true);
+
+    // Safety master timeout: prevent lookup from ever staying stuck in loading
+    const masterTimeout = setTimeout(() => {
+      if (abortControllerRef.current && currentReqId === requestIdRef.current) {
+        abortControllerRef.current.abort();
+      }
+    }, 7000);
 
     try {
       const res = await lookupText(text, signal, sentence);
@@ -321,11 +336,40 @@ export default function App() {
         setInteractionState("showing-result");
       }
     } finally {
+      clearTimeout(masterTimeout);
       if (!signal.aborted && currentReqId === requestIdRef.current) {
         setBusy(false);
       }
     }
   }, [interactionState]);
+
+  // Reposition popup dynamically on scroll, resize, or scale changes to stay anchored near target word
+  useEffect(() => {
+    if (!entry) return;
+    const updatePosition = () => {
+      if (activeTargetElRef.current && activeTargetElRef.current.isConnected) {
+        const newRect = activeTargetElRef.current.getBoundingClientRect();
+        setPopupPos(calculatePopupPosition(newRect, 320, 160));
+      } else if (activeWordRect) {
+        setPopupPos(calculatePopupPosition(activeWordRect, 320, 160));
+      }
+    };
+
+    window.addEventListener("resize", updatePosition, { passive: true });
+    window.addEventListener("scroll", updatePosition, { passive: true });
+    const readerEl = readerAreaRef.current;
+    if (readerEl) {
+      readerEl.addEventListener("scroll", updatePosition, { passive: true });
+    }
+
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition);
+      if (readerEl) {
+        readerEl.removeEventListener("scroll", updatePosition);
+      }
+    };
+  }, [entry, scale, activeWordRect]);
 
   // Retry failed translation
   const retryTranslation = useCallback(() => {
@@ -381,11 +425,11 @@ export default function App() {
       const currentOcrToken = ++ocrAbortTokenRef.current;
       activeOcrPageRef.current = targetPage;
       setOcrBusy(true);
-      setOcrProgress(5);
+      setOcrProgress(10);
       setNotice(
         isManual
-          ? `पेज ${targetPage}: OCR विश्लेषण शुरू हो रहा है (5%)…`
-          : `पेज ${targetPage}: स्कैन किया गया पेज — स्वचालित OCR विश्लेषण जारी है (5%)…`
+          ? `पेज ${targetPage}: हाई-रेज़ोल्यूशन पेज तैयार हो रहा है (10%)…`
+          : `पेज ${targetPage}: स्कैन किया गया पेज — हाई-रेज़ोल्यूशन रेंडर जारी है (10%)…`
       );
 
       let worker = null;
@@ -431,14 +475,23 @@ export default function App() {
         ctx.drawImage(offscreen, 0, 0);
 
         setOcrProgress(20);
+        setNotice(`पेज ${targetPage}: इमेज प्री-प्रोसेसिंग पूर्ण (20%)…`);
 
         worker = await createWorker("eng", 1, {
           logger: (m) => {
-            if (m.status === "recognizing text" && typeof m.progress === "number") {
-              if (ocrAbortTokenRef.current === currentOcrToken) {
-                setOcrProgress(Math.min(99, Math.round(m.progress * 100)));
-              }
+            if (ocrAbortTokenRef.current !== currentOcrToken) return;
+            let prog = 25;
+            if (m.status === "loading tesseract core" || m.status === "initializing tesseract") {
+              prog = 25 + Math.round((m.progress || 0) * 10);
+              setNotice(`पेज ${targetPage}: OCR इंजन लोड हो रहा है (${prog}%)…`);
+            } else if (m.status === "loading language traineddata" || m.status === "initializing api") {
+              prog = 35 + Math.round((m.progress || 0) * 10);
+              setNotice(`पेज ${targetPage}: भाषा मॉडल लोड हो रहा है (${prog}%)…`);
+            } else if (m.status === "recognizing text" && typeof m.progress === "number") {
+              prog = 45 + Math.round(m.progress * 50);
+              setNotice(`पेज ${targetPage}: टेक्स्ट पहचान जारी है (${prog}%)…`);
             }
+            setOcrProgress(Math.min(96, Math.max(10, prog)));
           }
         });
 
@@ -452,6 +505,9 @@ export default function App() {
         worker = null;
 
         if (ocrAbortTokenRef.current !== currentOcrToken) return;
+
+        setOcrProgress(98);
+        setNotice(`पेज ${targetPage}: शब्द संरचना और निर्देशांक मैपिंग (98%)…`);
 
         const imageW = offscreen.width || 1;
         const imageH = offscreen.height || 1;
@@ -468,19 +524,11 @@ export default function App() {
               const height = parseInt(cols[9], 10);
               const conf = parseFloat(cols[10]);
               const rawText = cols[11]?.trim();
-              const clean = cleanSingleWord(rawText);
-              if (clean && clean.length >= 2 && !isNaN(left) && !isNaN(top) && (isNaN(conf) || conf >= 25)) {
-                words.push({
-                  text: rawText,
-                  clean,
-                  relBox: {
-                    x0: left / imageW,
-                    y0: top / imageH,
-                    x1: (left + width) / imageW,
-                    y1: (top + height) / imageH
-                  },
-                  confidence: conf
-                });
+              if (rawText && !isNaN(left) && !isNaN(top) && (isNaN(conf) || conf >= 25)) {
+                const segmented = segmentOcrText(rawText, left, top, width, height, conf, imageW, imageH);
+                for (const seg of segmented) {
+                  words.push(seg);
+                }
               }
             }
           }
@@ -489,19 +537,20 @@ export default function App() {
             for (const para of block.paragraphs || []) {
               for (const line of para.lines || []) {
                 for (const w of line.words || []) {
-                  const clean = cleanSingleWord(w.text);
-                  if (clean && clean.length >= 2 && w.bbox && (w.confidence === undefined || w.confidence >= 25)) {
-                    words.push({
-                      text: w.text.trim(),
-                      clean,
-                      relBox: {
-                        x0: w.bbox.x0 / imageW,
-                        y0: w.bbox.y0 / imageH,
-                        x1: w.bbox.x1 / imageW,
-                        y1: w.bbox.y1 / imageH
-                      },
-                      confidence: w.confidence
-                    });
+                  if (w.text && w.bbox && (w.confidence === undefined || w.confidence >= 25)) {
+                    const segmented = segmentOcrText(
+                      w.text,
+                      w.bbox.x0,
+                      w.bbox.y0,
+                      w.bbox.x1 - w.bbox.x0,
+                      w.bbox.y1 - w.bbox.y0,
+                      w.confidence || 90,
+                      imageW,
+                      imageH
+                    );
+                    for (const seg of segmented) {
+                      words.push(seg);
+                    }
                   }
                 }
               }
@@ -513,6 +562,7 @@ export default function App() {
 
         if (page === targetPage) {
           setOcrWords(words);
+          setOcrProgress(100);
           if (words.length === 0) {
             setNotice(`पेज ${targetPage} पर स्पष्ट टेक्स्ट नहीं मिला।`);
           } else {
@@ -626,13 +676,36 @@ export default function App() {
               return; // Do not reopen previously dismissed selection!
             }
 
-            openMeaning(found);
+            openMeaning({ ...found, targetEl: container || startEl });
             return;
           }
         }
       }
 
-      // 2. For scanned PDFs: check if user explicitly clicked an OCR recognized word box
+      // 2. For text-based PDFs: check if user clicked on a word in the PDF text layer
+      const clientX = typeof e.clientX === "number" ? e.clientX : 0;
+      const clientY = typeof e.clientY === "number" ? e.clientY : 0;
+      const targetEl = e.target || (typeof document !== "undefined" && clientX && clientY ? document.elementFromPoint(clientX, clientY) : null);
+      const textSpan = targetEl?.closest?.(".textLayer span");
+
+      if (!isScannedPage && textSpan && clientX && clientY) {
+        const foundWord = extractWordAtPoint(clientX, clientY, textSpan);
+        if (foundWord && foundWord.text && foundWord.text.trim()) {
+          const rect = foundWord.rect;
+          const textSig = foundWord.text.trim().toLowerCase();
+          const rectSig = rect ? `${Math.round(rect.left)},${Math.round(rect.top)}` : "";
+          const currentSig = `${textSig}@${rectSig}`;
+
+          if (dismissedSignatureRef.current === currentSig && interactionState === "dismissed") {
+            return;
+          }
+
+          openMeaning({ ...foundWord, targetEl: textSpan });
+          return;
+        }
+      }
+
+      // 3. For scanned PDFs: check if user clicked an OCR recognized word box
       const ocrSpan = e.target?.closest?.(".ocr-word-span");
       if (ocrSpan && ocrSpan.getAttribute("data-word")) {
         const word = ocrSpan.getAttribute("data-word");
@@ -664,17 +737,14 @@ export default function App() {
             wordCount: 1,
             rect,
             sentence: ocrSentence,
-            ocrConfidence
+            ocrConfidence,
+            targetEl: ocrSpan
           });
           return;
         }
       }
 
-      // 3. For text-based PDFs: check if user clicked on a word in the PDF text layer
-      const clientX = typeof e.clientX === "number" ? e.clientX : 0;
-      const clientY = typeof e.clientY === "number" ? e.clientY : 0;
-      const targetEl = e.target || (typeof document !== "undefined" && clientX && clientY ? document.elementFromPoint(clientX, clientY) : null);
-      const textSpan = targetEl?.closest?.(".textLayer span");
+      // Fallback for text span click if page wasn't flagged as non-scanned
       if (textSpan && clientX && clientY) {
         const foundWord = extractWordAtPoint(clientX, clientY, textSpan);
         if (foundWord && foundWord.text && foundWord.text.trim()) {
@@ -687,7 +757,7 @@ export default function App() {
             return;
           }
 
-          openMeaning(foundWord);
+          openMeaning({ ...foundWord, targetEl: textSpan });
           return;
         }
       }
@@ -700,7 +770,7 @@ export default function App() {
       setInteractionState("idle");
       dismissedSignatureRef.current = null;
     },
-    [entry, interactionState, openMeaning, closePopup, ocrWords]
+    [entry, interactionState, openMeaning, closePopup, ocrWords, isScannedPage]
   );
 
   useEffect(() => {
@@ -785,6 +855,36 @@ export default function App() {
       }
     };
   }, [processSelectionOrClick]);
+
+  // Two-finger pinch zoom gesture for mobile devices
+  const handleReaderTouchStart = (e) => {
+    if (e.touches && e.touches.length === 2) {
+      const dist = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY
+      );
+      pinchDistRef.current = dist;
+      pinchStartScaleRef.current = scale;
+    }
+  };
+
+  const handleReaderTouchMove = (e) => {
+    if (e.touches && e.touches.length === 2 && pinchDistRef.current) {
+      const dist = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY
+      );
+      const ratio = dist / pinchDistRef.current;
+      const newScale = Math.min(2.5, Math.max(0.6, +(pinchStartScaleRef.current * ratio).toFixed(2)));
+      setScale(newScale);
+    }
+  };
+
+  const handleReaderTouchEnd = (e) => {
+    if (!e.touches || e.touches.length < 2) {
+      pinchDistRef.current = null;
+    }
+  };
 
   // Safe page navigation (ensures any open popups or pending requests close)
   const goToPage = (p) => {
@@ -1146,7 +1246,13 @@ export default function App() {
       )}
 
       {/* Main Newspaper Reader Area */}
-      <main className="reader-area" ref={readerAreaRef}>
+      <main
+        className="reader-area"
+        ref={readerAreaRef}
+        onTouchStart={handleReaderTouchStart}
+        onTouchMove={handleReaderTouchMove}
+        onTouchEnd={handleReaderTouchEnd}
+      >
         {!file ? (
           <div className="welcome-card">
             <div className="welcome-icon">
@@ -1218,7 +1324,7 @@ export default function App() {
                 />
 
                 {/* Scanned PDF interactive transparent selectable OCR layer */}
-                {ocrWords.length > 0 && showOcrBoxes && (
+                {isScannedPage && ocrWords.length > 0 && showOcrBoxes && (
                   <div className="ocr-overlay" aria-label="Interactive OCR selectable words">
                     {ocrWords.map((item, idx) => {
                       const leftPct = (item.relBox.x0 * 100).toFixed(3);
@@ -1283,7 +1389,7 @@ export default function App() {
       </main>
 
       {/* Extremely Minimal English-to-Hindi Meaning Popup (or Mobile Bottom Sheet) */}
-      {entry && (
+      {entry && typeof document !== "undefined" && createPortal(
         <div
           ref={popupRef}
           className={`meaning-popup ${popupPos.placement}`}
@@ -1394,7 +1500,8 @@ export default function App() {
               खोज रहे हैं…
             </div>
           )}
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* Pages Navigator Drawer / Jump Modal */}

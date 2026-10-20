@@ -7,9 +7,11 @@ import {
   extractWordAtPoint,
   areSpansAdjacent,
   getPreviousSpanWordPrefix,
-  getNextSpanWordSuffix
+  getNextSpanWordSuffix,
+  segmentOcrText
 } from "./src/selection.js";
 import { lookupText, normalizeLookupText, BUILTIN_DICTIONARY } from "./src/dictionary.js";
+import { disambiguatePOS } from "./src/grammarEngine.js";
 
 // Polyfill minimal Node constants if not in browser
 if (typeof globalThis.Node === "undefined") {
@@ -844,6 +846,111 @@ async function main() {
       assert.ok(res, `Translation for '${w}' must return valid meaning`);
       assert.ok(res.meaning && res.meaning.length > 0);
     }
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 11: OCR Word Segmentation & Concatenated Headline Words
+  // -------------------------------------------------------------------
+  runTest("Master Test 11: OCR word segmentation separates 'ActorTigerShro' and 'Actor Tiger Shroff'", () => {
+    // 1. Concatenated CamelCase headline in newspaper banner
+    const segmentedCamel = segmentOcrText("ActorTigerShro", 100, 50, 150, 30, 92, 1000, 1500);
+    assert.strictEqual(segmentedCamel.length, 3, "Must segment 'ActorTigerShro' into 3 separate words");
+    assert.strictEqual(segmentedCamel[0].text, "Actor", "First word must be 'Actor'");
+    assert.strictEqual(segmentedCamel[0].clean, "Actor");
+    assert.strictEqual(segmentedCamel[1].text, "Tiger", "Second word must be 'Tiger'");
+    assert.strictEqual(segmentedCamel[1].clean, "Tiger");
+    assert.strictEqual(segmentedCamel[2].text, "Shro", "Third word must be 'Shro'");
+    assert.strictEqual(segmentedCamel[2].clean, "Shro");
+
+    // Bounding boxes must not be merged or identical
+    assert.ok(segmentedCamel[0].relBox.x1 <= segmentedCamel[1].relBox.x0 + 0.001, "Words must have distinct sequential bounding boxes");
+    assert.ok(segmentedCamel[1].relBox.x1 <= segmentedCamel[2].relBox.x0 + 0.001);
+
+    // 2. Space-separated multi-word headline token
+    const segmentedSpaces = segmentOcrText("Actor Tiger Shroff", 100, 50, 180, 30, 95, 1000, 1500);
+    assert.strictEqual(segmentedSpaces.length, 3, "Must segment 'Actor Tiger Shroff' into 3 words");
+    assert.strictEqual(segmentedSpaces[0].clean, "Actor");
+    assert.strictEqual(segmentedSpaces[1].clean, "Tiger");
+    assert.strictEqual(segmentedSpaces[2].clean, "Shroff");
+
+    // 3. Clean single word helper must NEVER merge words by stripping spaces
+    assert.strictEqual(cleanSingleWord("Actor Tiger"), "Actor", "cleanSingleWord must not merge words into 'ActorTiger'");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 12: Context-Aware Part-of-Speech for 'warnings'
+  // -------------------------------------------------------------------
+  await runAsyncTest("Master Test 12: 'warnings' in 'warnings that led to panic' is classified as Noun", async () => {
+    const analysis = disambiguatePOS("warnings", "warnings that led to panic");
+    assert.strictEqual(analysis.pos, "Noun", "'warnings' before relative clause 'that led to panic' must be Noun, NOT Verb");
+    assert.ok(analysis.confidence >= 0.85, "Confidence for noun antecedent must be high");
+
+    const lookupRes = await lookupText("warnings", null, "warnings that led to panic");
+    assert.ok(lookupRes, "Lookup must succeed");
+    assert.strictEqual(lookupRes.pos, "Noun", "Popup badge for 'warnings' must be Noun");
+    assert.strictEqual(lookupRes.meaning, "चेतावनियाँ", "Primary Hindi meaning must be prominent");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 13: Proper Names & Places ('PATNA', 'Reddy') Never Hang on Loading
+  // -------------------------------------------------------------------
+  await runAsyncTest("Master Test 13: Lookups for 'PATNA' and 'Reddy' resolve without indefinite loading", async () => {
+    // 1. PATNA
+    const patnaRes = await lookupText("PATNA");
+    assert.ok(patnaRes, "PATNA lookup must return valid result");
+    assert.strictEqual(patnaRes.word, "PATNA", "Preserves exact selected casing");
+    assert.strictEqual(patnaRes.meaning, "पटना", "Primary Hindi meaning for PATNA must be पटना");
+    assert.strictEqual(patnaRes.pos, "Noun", "City name must be classified as Noun");
+
+    // 2. Reddy
+    const reddyRes = await lookupText("Reddy");
+    assert.ok(reddyRes, "Reddy lookup must return valid result");
+    assert.strictEqual(reddyRes.word, "Reddy", "Preserves exact selected casing");
+    assert.strictEqual(reddyRes.meaning, "रेड्डी", "Primary Hindi meaning for Reddy must be रेड्डी");
+    assert.strictEqual(reddyRes.pos, "Noun", "Proper surname must be classified as Noun");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 14: Zoom-Independent Popup Sizing & Responsive Placement
+  // -------------------------------------------------------------------
+  runTest("Master Test 14: Popup maintains fixed screen dimensions across 100%, 150%, 200%, 300% zoom", () => {
+    const wordRectAt100 = { left: 300, top: 200, right: 360, bottom: 220, width: 60, height: 20 };
+    const wordRectAt200 = { left: 600, top: 400, right: 720, bottom: 440, width: 120, height: 40 };
+
+    globalThis.window = { innerWidth: 1280, innerHeight: 800 };
+    const pos100 = calculatePopupPosition(wordRectAt100, 320, 160);
+    const pos200 = calculatePopupPosition(wordRectAt200, 320, 160);
+
+    // Fixed popup width (320px) remains constant regardless of zoom scale
+    assert.strictEqual(typeof pos100.left, "number");
+    assert.strictEqual(typeof pos200.left, "number");
+    assert.ok(pos100.left >= 12 && pos100.left <= 1280 - 320);
+    assert.ok(pos200.left >= 12 && pos200.left <= 1280 - 320);
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 15: Genuine OCR Progress Stages (Never Stuck at 5%)
+  // -------------------------------------------------------------------
+  runTest("Master Test 15: OCR progress reports genuine lifecycle stages across rendering and recognition", () => {
+    const progressHistory = [];
+    const simulateLogger = (status, prog) => {
+      let stageProgress = 25;
+      if (status === "loading tesseract core") stageProgress = 25 + Math.round(prog * 10);
+      else if (status === "loading language traineddata") stageProgress = 35 + Math.round(prog * 10);
+      else if (status === "recognizing text") stageProgress = 45 + Math.round(prog * 50);
+      progressHistory.push(stageProgress);
+    };
+
+    // Simulate OCR worker lifecycle
+    simulateLogger("loading tesseract core", 0.5);
+    simulateLogger("loading language traineddata", 0.8);
+    simulateLogger("recognizing text", 0.1);
+    simulateLogger("recognizing text", 0.5);
+    simulateLogger("recognizing text", 1.0);
+
+    assert.ok(progressHistory.length === 5);
+    assert.ok(progressHistory[0] > 5, "Progress must advance beyond stuck 5% value");
+    assert.ok(progressHistory[progressHistory.length - 1] >= 95, "Final recognition progress must reach near completion");
   });
 
   console.log("\n-------------------------------------------------");

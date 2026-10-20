@@ -7,9 +7,82 @@ export function cleanSingleWord(raw) {
   let w = raw.trim();
   // Strip leading & trailing quotes, brackets, punctuations
   w = w.replace(/^[“"‘'(\[{<«»\s,.:;!?-]+|[”"’')\]}>«»\s,.:;!?-]+$/g, "");
-  // Keep valid English word characters and digits
+  // If multiple space-separated words are passed, pick only the first word instead of merging words
+  if (/\s/.test(w)) {
+    w = w.split(/\s+/)[0];
+    w = w.replace(/^[“"‘'(\[{<«»\s,.:;!?-]+|[”"’')\]}>«»\s,.:;!?-]+$/g, "");
+  }
+  // Keep valid English word characters, digits, hyphens, and apostrophes
   w = w.replace(/[^A-Za-z0-9'-]/g, "");
   return w;
+}
+
+// Accurately segment OCR text tokens into individual words with proportional bounding boxes
+// Prevents merging of adjacent words (e.g. "ActorTigerShro" -> "Actor", "Tiger", "Shro")
+export function segmentOcrText(rawText, left, top, width, height, conf, imageW, imageH) {
+  if (!rawText || !rawText.trim()) return [];
+  const trimmed = rawText.trim();
+  const safeImgW = imageW || 1;
+  const safeImgH = imageH || 1;
+
+  // 1. Separate by explicit whitespace
+  const spaceTokens = trimmed.split(/\s+/).filter(Boolean);
+
+  // 2. Identify potential CamelCase concatenated words (e.g., "ActorTigerShro" in tight headline fonts)
+  let wordTokens = [];
+  for (const st of spaceTokens) {
+    const camelMatch = st.match(/[A-Z][a-z0-9'-]+|[A-Z]+(?=[A-Z][a-z0-9]|\b)|[a-z0-9'-]+/g);
+    if (camelMatch && camelMatch.length > 1 && camelMatch.join("").toLowerCase() === st.toLowerCase()) {
+      wordTokens.push(...camelMatch);
+    } else {
+      wordTokens.push(st);
+    }
+  }
+
+  if (wordTokens.length === 0) return [];
+
+  // Single word token
+  if (wordTokens.length === 1) {
+    const clean = cleanSingleWord(wordTokens[0]);
+    if (!clean || clean.length < 2) return [];
+    return [{
+      text: wordTokens[0],
+      clean,
+      relBox: {
+        x0: left / safeImgW,
+        y0: top / safeImgH,
+        x1: (left + width) / safeImgW,
+        y1: (top + height) / safeImgH
+      },
+      confidence: conf
+    }];
+  }
+
+  // Multi-word OCR line/token: partition bounding box proportionally across words
+  const totalChars = wordTokens.reduce((sum, w) => sum + Math.max(1, w.length), 0);
+  const results = [];
+  let currentX = left;
+
+  for (const token of wordTokens) {
+    const clean = cleanSingleWord(token);
+    const tokenW = Math.max(1, Math.round((Math.max(1, token.length) / totalChars) * width));
+    if (clean && clean.length >= 2) {
+      results.push({
+        text: token,
+        clean,
+        relBox: {
+          x0: currentX / safeImgW,
+          y0: top / safeImgH,
+          x1: (currentX + tokenW) / safeImgW,
+          y1: (top + height) / safeImgH
+        },
+        confidence: conf
+      });
+    }
+    currentX += tokenW;
+  }
+
+  return results;
 }
 
 // Normalize multi-word selections, phrases, or full sentences
