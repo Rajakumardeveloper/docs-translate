@@ -82,6 +82,8 @@ export default function App() {
   const readerAreaRef = useRef(null);
   const popupRef = useRef(null);
   const abortControllerRef = useRef(null);
+  const requestIdRef = useRef(0);
+  const touchStartPos = useRef({ x: 0, y: 0 });
   const ocrCache = useRef(new Map());
 
   // PDF.js options to support diverse newspaper encodings, CMaps, and standard fonts
@@ -95,6 +97,7 @@ export default function App() {
 
   // Safely close active dictionary/translation popup and abort any in-flight requests
   const closePopup = useCallback(() => {
+    requestIdRef.current++;
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
@@ -111,6 +114,9 @@ export default function App() {
     setPage(1);
     setPageJumpInput("1");
     closePopup();
+    try {
+      window.getSelection()?.removeAllRanges();
+    } catch {}
     setOcrWords([]);
     setSearchResults([]);
     setSearchNotice("");
@@ -161,14 +167,24 @@ export default function App() {
       return;
     }
 
-    // 3. For single words, validate and clean
-    if (!text.includes(" ")) {
+    // 3. Strict check: ReadHindi translates a user-selected word or phrase.
+    // Whole-document selections or full-page text dumps (> 35 words or > 300 chars) are NOT phrases.
+    const words = text.split(/\s+/).filter(Boolean);
+    if (words.length === 0 || words.length > 35 || text.length > 300) {
+      return;
+    }
+
+    // 4. For single words, validate and clean
+    if (words.length === 1) {
       const clean = cleanSingleWord(text);
       if (!clean || (clean.length < 2 && !["a", "i", "A", "I"].includes(clean))) {
         return;
       }
       text = clean;
     }
+
+    // Increment request token to discard any previous in-flight responses
+    const currentReqId = ++requestIdRef.current;
 
     // Cancel any previous in-flight request before initiating a new one
     if (abortControllerRef.current) {
@@ -182,7 +198,7 @@ export default function App() {
     setPopupPos(pos);
 
     setAltIndex(0);
-    const isMultiWord = text.includes(" ") || text.split(/\s+/).length > 1;
+    const isMultiWord = words.length > 1;
     const initialType = isMultiWord ? (type === "sentence" ? "sentence" : "phrase") : "word";
 
     setEntry({
@@ -198,14 +214,16 @@ export default function App() {
 
     try {
       const res = await lookupText(text, signal, sentence);
-      if (!signal.aborted) {
-        setEntry(res);
-        if (rect) {
-          setPopupPos(calculatePopupPosition(rect, 360, 260));
+      if (!signal.aborted && currentReqId === requestIdRef.current) {
+        if (res) {
+          setEntry(res);
+          if (rect) {
+            setPopupPos(calculatePopupPosition(rect, 360, 260));
+          }
         }
       }
     } catch (e) {
-      if (e.name !== "AbortError" && !signal.aborted) {
+      if (e.name !== "AbortError" && !signal.aborted && currentReqId === requestIdRef.current) {
         setEntry({
           type: initialType,
           text,
@@ -217,7 +235,7 @@ export default function App() {
         });
       }
     } finally {
-      if (!signal.aborted) {
+      if (!signal.aborted && currentReqId === requestIdRef.current) {
         setBusy(false);
       }
     }
@@ -242,12 +260,15 @@ export default function App() {
   }, [entry, activeWordRect]);
 
   // Check text content on page render (Mixed PDF Auto-Detection)
+  // NEVER triggers translation; only checks whether OCR overlay is needed for scanned pages
   const onTextLayerRenderSuccess = useCallback(() => {
     if (!pagePaperRef.current) return;
     const textLayer = pagePaperRef.current.querySelector(".textLayer");
-    const text = textLayer ? textLayer.innerText.trim() : "";
-    const words = text.split(/\s+/).filter((w) => w.length >= 2);
-    const hasFewWords = words.length < 8;
+    if (!textLayer) return;
+
+    // Count rendered text spans directly without accessing full-page innerText
+    const spans = textLayer.querySelectorAll("span");
+    const hasFewWords = spans.length < 5;
     setIsScannedPage(hasFewWords);
 
     // If page is scanned and we already have cached OCR results for this page, load them
@@ -264,7 +285,7 @@ export default function App() {
       // If clicking inside the popup, let popup buttons handle their events
       if (popupRef.current && popupRef.current.contains(e.target)) return;
 
-      // 1. Check if user made an active text selection across words/spans
+      // 1. Check if user made an active text selection across PDF text spans or OCR overlays
       const sel = window.getSelection();
       if (sel && !sel.isCollapsed && sel.rangeCount > 0) {
         const range = sel.getRangeAt(0);
@@ -273,8 +294,10 @@ export default function App() {
             ? range.commonAncestorContainer
             : range.commonAncestorContainer?.parentElement;
 
-        const isInsideReader = container?.closest?.(".page-paper, .textLayer, .ocr-overlay");
-        if (isInsideReader) {
+        const isInsideTextLayer = container?.closest?.(".textLayer");
+        const isInsideOcr = container?.closest?.(".ocr-overlay");
+
+        if (isInsideTextLayer || isInsideOcr) {
           const found = expandRangeToSelection(range);
           if (found && found.text && found.text.trim()) {
             openMeaning(found);
@@ -308,10 +331,22 @@ export default function App() {
   );
 
   useEffect(() => {
+    const onTouchStart = (e) => {
+      if (e.touches && e.touches[0]) {
+        touchStartPos.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      }
+    };
+
     const onMouseUp = (e) => processSelectionOrClick(e);
     const onTouchEnd = (e) => {
       if (e.changedTouches && e.changedTouches[0]) {
         const touch = e.changedTouches[0];
+        const dx = Math.abs(touch.clientX - touchStartPos.current.x);
+        const dy = Math.abs(touch.clientY - touchStartPos.current.y);
+        // If movement exceeds 10px, this was a scroll or pinch-zoom, not a tap or selection
+        if (dx > 10 || dy > 10) {
+          return;
+        }
         setTimeout(() => {
           processSelectionOrClick({
             clientX: touch.clientX,
@@ -322,9 +357,11 @@ export default function App() {
       }
     };
 
+    document.addEventListener("touchstart", onTouchStart, { passive: true });
     document.addEventListener("mouseup", onMouseUp);
     document.addEventListener("touchend", onTouchEnd);
     return () => {
+      document.removeEventListener("touchstart", onTouchStart);
       document.removeEventListener("mouseup", onMouseUp);
       document.removeEventListener("touchend", onTouchEnd);
     };
@@ -359,6 +396,9 @@ export default function App() {
   const goToPage = (p) => {
     const target = Math.max(1, Math.min(p, numPages || 1));
     closePopup();
+    try {
+      window.getSelection()?.removeAllRanges();
+    } catch {}
     setPage(target);
     setPageJumpInput(String(target));
     if (ocrCache.current.has(target)) {
@@ -376,16 +416,25 @@ export default function App() {
         setNotice("कृपया केवल PDF (.pdf) फ़ाइल चुनें।");
         return;
       }
+      closePopup();
+      try {
+        window.getSelection()?.removeAllRanges();
+      } catch {}
       setFile(f);
       setNotice("");
     }
+    // Reset file input so re-selecting the same file works reliably
+    if (e.target) {
+      e.target.value = "";
+    }
   };
 
-  // Zoom controls
-  const zoomIn = () => setScale((s) => Math.min(2.5, +(s + 0.15).toFixed(2)));
-  const zoomOut = () => setScale((s) => Math.max(0.5, +(s - 0.15).toFixed(2)));
-  const zoomReset = () => setScale(1.0);
+  // Zoom controls (closes any open popup and never triggers translation)
+  const zoomIn = () => { closePopup(); setScale((s) => Math.min(2.5, +(s + 0.15).toFixed(2))); };
+  const zoomOut = () => { closePopup(); setScale((s) => Math.max(0.5, +(s - 0.15).toFixed(2))); };
+  const zoomReset = () => { closePopup(); setScale(1.0); };
   const cycleZoom = () => {
+    closePopup();
     const levels = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
     const currIdx = levels.findIndex((l) => Math.abs(l - scale) < 0.1);
     const nextIdx = (currIdx + 1) % levels.length;

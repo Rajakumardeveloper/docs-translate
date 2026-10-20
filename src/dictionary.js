@@ -505,6 +505,27 @@ export const BUILTIN_DICTIONARY = {
     meaning: "जारी",
     alternatives: ["जारी", "लगातार", "निरंतर"],
     sentence: "Continuing dialogue eases regional friction. — निरंतर संवाद क्षेत्रीय तनाव को कम करता है।"
+  },
+  constitution: {
+    word: "constitution",
+    ipa: "/ˌkɑːn.stəˈtuː.ʃən/",
+    meaning: "संविधान",
+    alternatives: ["संविधान", "विधान", "शासन-प्रणाली", "संरचना"],
+    sentence: "The Constitution of India is the supreme law of the land. — भारत का संविधान देश का सर्वोच्च कानून है।"
+  },
+  democratic: {
+    word: "democratic",
+    ipa: "/ˌdem.əˈkræt̬.ɪk/",
+    meaning: "लोकतांत्रिक",
+    alternatives: ["लोकतांत्रिक", "प्रजातांत्रिक"],
+    sentence: "Democratic institutions ensure public accountability. — लोकतांत्रिक संस्थाएं जन जवाबदेही सुनिश्चित करती हैं।"
+  },
+  democracy: {
+    word: "democracy",
+    ipa: "/dɪˈmɑː.krə.si/",
+    meaning: "लोकतंत्र",
+    alternatives: ["लोकतंत्र", "प्रजातंत्र", "जनतंत्र"],
+    sentence: "A free press is the bedrock of democracy. — स्वतंत्र प्रेस लोकतंत्र की आधारशिला है।"
   }
 };
 
@@ -557,18 +578,15 @@ export function normalizeLookupText(rawText) {
 export async function lookupText(rawText, signal = null, contextSentence = "") {
   const normalized = normalizeLookupText(rawText);
   if (!normalized) {
-    return {
-      type: "word",
-      text: rawText || "",
-      word: rawText || "",
-      meaning: "मान्य शब्द या वाक्य चुनें",
-      alternatives: ["मान्य शब्द या वाक्य चुनें"],
-      ipa: "",
-      source: "Validation"
-    };
+    return null;
   }
 
   const words = normalized.split(/\s+/).filter(Boolean);
+  // Strict guard: Reject whole-document dumps or selections exceeding phrase/sentence bounds
+  if (words.length === 0 || words.length > 35 || normalized.length > 300) {
+    return null;
+  }
+
   const isMultiWord = words.length > 1;
 
   // ---------------------------------------------------------
