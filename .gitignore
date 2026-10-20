@@ -10,3 +10,4 @@ eng.traineddata
 # Logs & temp files
 *.log
 .DS_Store
+test_data/

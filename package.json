@@ -7,7 +7,8 @@
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0",
-    "test": "node test-regression.js"
+    "test": "node test-regression.js",
+    "benchmark": "node measure-benchmarks.js"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",

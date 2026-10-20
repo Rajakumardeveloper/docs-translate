@@ -422,30 +422,7 @@ export default function App() {
         const imageH = offscreen.height || 1;
         const words = [];
 
-        if (ret.data?.blocks && ret.data.blocks.length > 0) {
-          for (const block of ret.data.blocks) {
-            for (const para of block.paragraphs || []) {
-              for (const line of para.lines || []) {
-                for (const w of line.words || []) {
-                  const clean = cleanSingleWord(w.text);
-                  if (clean && clean.length >= 2 && w.bbox && (w.confidence === undefined || w.confidence >= 25)) {
-                    words.push({
-                      text: w.text.trim(),
-                      clean,
-                      relBox: {
-                        x0: w.bbox.x0 / imageW,
-                        y0: w.bbox.y0 / imageH,
-                        x1: w.bbox.x1 / imageW,
-                        y1: w.bbox.y1 / imageH
-                      },
-                      confidence: w.confidence
-                    });
-                  }
-                }
-              }
-            }
-          }
-        } else if (ret.data?.tsv) {
+        if (ret.data?.tsv) {
           const lines = ret.data.tsv.split("\n");
           for (const line of lines) {
             const cols = line.split("\t");
@@ -469,6 +446,29 @@ export default function App() {
                   },
                   confidence: conf
                 });
+              }
+            }
+          }
+        } else if (ret.data?.blocks && ret.data.blocks.length > 0) {
+          for (const block of ret.data.blocks) {
+            for (const para of block.paragraphs || []) {
+              for (const line of para.lines || []) {
+                for (const w of line.words || []) {
+                  const clean = cleanSingleWord(w.text);
+                  if (clean && clean.length >= 2 && w.bbox && (w.confidence === undefined || w.confidence >= 25)) {
+                    words.push({
+                      text: w.text.trim(),
+                      clean,
+                      relBox: {
+                        x0: w.bbox.x0 / imageW,
+                        y0: w.bbox.y0 / imageH,
+                        x1: w.bbox.x1 / imageW,
+                        y1: w.bbox.y1 / imageH
+                      },
+                      confidence: w.confidence
+                    });
+                  }
+                }
               }
             }
           }
