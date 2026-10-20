@@ -430,10 +430,23 @@ html, body {
   overflow: auto;
   padding: 16px 12px;
   display: flex;
-  justify-content: center;
+  justify-content: safe center;
   align-items: flex-start;
   position: relative;
   -webkit-overflow-scrolling: touch;
+  touch-action: pan-x pan-y pinch-zoom;
+  overscroll-behavior: contain;
+  cursor: grab;
+}
+
+.reader-area.panning {
+  cursor: grabbing !important;
+  user-select: none !important;
+}
+
+.reader-area.panning * {
+  cursor: grabbing !important;
+  user-select: none !important;
 }
 
 /* Welcome Card (No PDF loaded) */
@@ -533,7 +546,8 @@ html, body {
 
 /* PDF Stage & Paper Display */
 .pdf-stage {
-  width: 100%;
+  margin: auto;
+  min-width: max-content;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -547,6 +561,8 @@ html, body {
   position: relative;
   display: inline-block;
   line-height: normal;
+  transform-origin: 0 0;
+  touch-action: pan-x pan-y;
 }
 
 .react-pdf__Page {

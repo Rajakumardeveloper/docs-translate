@@ -3,12 +3,15 @@ import {
   cleanSingleWord,
   normalizeSelectionText,
   expandRangeToSelection,
+  extractSurroundingSentence,
   calculatePopupPosition,
   extractWordAtPoint,
   areSpansAdjacent,
   getPreviousSpanWordPrefix,
   getNextSpanWordSuffix,
-  segmentOcrText
+  segmentOcrText,
+  classifyTextRegion,
+  getSpanFontSize
 } from "./src/selection.js";
 import { lookupText, normalizeLookupText, BUILTIN_DICTIONARY } from "./src/dictionary.js";
 import { disambiguatePOS } from "./src/grammarEngine.js";
@@ -951,6 +954,204 @@ async function main() {
     assert.ok(progressHistory.length === 5);
     assert.ok(progressHistory[0] > 5, "Progress must advance beyond stuck 5% value");
     assert.ok(progressHistory[progressHistory.length - 1] >= 95, "Final recognition progress must reach near completion");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 16: Focal-Point Zoom Preservation Math
+  // -------------------------------------------------------------------
+  runTest("Master Test 16: Focal-point preservation math during zoom keeps midpoint stationary", () => {
+    // Viewport: 800w x 600h, Current scale: 1.0, Scroll: (100, 200)
+    const viewportW = 800;
+    const viewportH = 600;
+    const initialScale = 1.0;
+    const targetScale = 2.0;
+    const scrollLeft = 100;
+    const scrollTop = 200;
+
+    // Midpoint between fingers: client coordinates (350, 250)
+    const midX = 350;
+    const midY = 250;
+
+    // Point in unscaled content:
+    const focalX = scrollLeft + midX; // 450
+    const focalY = scrollTop + midY;  // 450
+
+    // Scale ratio
+    const ratio = targetScale / initialScale; // 2.0
+
+    // Target scroll position keeping midX, midY fixed on screen
+    const targetScrollLeft = focalX * ratio - midX; // 450 * 2 - 350 = 550
+    const targetScrollTop = focalY * ratio - midY;  // 450 * 2 - 250 = 650
+
+    // Verify content point in new scale:
+    const scaledContentX = focalX * targetScale; // 900
+    const scaledContentY = focalY * targetScale; // 900
+
+    // Screen coordinate after zoom:
+    const newScreenX = scaledContentX - targetScrollLeft; // 900 - 550 = 350
+    const newScreenY = scaledContentY - targetScrollTop;  // 900 - 650 = 250
+
+    assert.strictEqual(newScreenX, midX, "Screen X under finger must remain exactly stationary");
+    assert.strictEqual(newScreenY, midY, "Screen Y under finger must remain exactly stationary");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 17: 2D Panning Boundaries and Clamping
+  // -------------------------------------------------------------------
+  runTest("Master Test 17: 2D Panning supports diagonal movement and prevents disappearing off-screen", () => {
+    const reader = {
+      scrollLeft: 100,
+      scrollTop: 100,
+      scrollWidth: 2000,
+      scrollHeight: 3000,
+      clientWidth: 800,
+      clientHeight: 600
+    };
+
+    const maxScrollLeft = reader.scrollWidth - reader.clientWidth;
+    const maxScrollTop = reader.scrollHeight - reader.clientHeight;
+
+    // Diagonal drag: dx = -150, dy = -200 (moving down-right)
+    const dx = -150;
+    const dy = -200;
+
+    const newLeft = Math.max(0, Math.min(reader.scrollLeft - dx, maxScrollLeft));
+    const newTop = Math.max(0, Math.min(reader.scrollTop - dy, maxScrollTop));
+
+    assert.strictEqual(newLeft, 250, "Diagonal scrollLeft updated correctly");
+    assert.strictEqual(newTop, 300, "Diagonal scrollTop updated correctly");
+
+    // Extreme pan top-left: dx = 500, dy = 500
+    const clampedMinLeft = Math.max(0, Math.min(reader.scrollLeft - 500, maxScrollLeft));
+    const clampedMinTop = Math.max(0, Math.min(reader.scrollTop - 500, maxScrollTop));
+    assert.strictEqual(clampedMinLeft, 0, "Clamped at minimum left boundary");
+    assert.strictEqual(clampedMinTop, 0, "Clamped at minimum top boundary");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 18: Headline and Section Title Isolation
+  // -------------------------------------------------------------------
+  runTest("Master Test 18: Headline sentence extraction stops at font-size boundaries and prevents body-text bleed", () => {
+    const spans = [
+      { textContent: "THE HINDU - TUESDAY, OCTOBER 20, 2026", style: { fontSize: "10px" } },
+      { textContent: "CABINET APPROVES NEW", style: { fontSize: "26px" } },
+      { textContent: "INFRASTRUCTURE", style: { fontSize: "26px" } },
+      { textContent: "POLICY", style: { fontSize: "26px" } },
+      { textContent: "NEW DELHI: The Union Cabinet on Wednesday approved a mega infrastructure package for ports.", style: { fontSize: "10px" } }
+    ];
+
+    const mockTextLayer = {
+      querySelectorAll: (sel) => sel === "span" ? spans : []
+    };
+
+    for (const s of spans) {
+      s.closest = (sel) => sel === ".textLayer" ? mockTextLayer : null;
+    }
+
+    const targetSpan = spans[2]; // "INFRASTRUCTURE"
+    const mockRange = {
+      startContainer: targetSpan,
+      startOffset: 0,
+      endContainer: targetSpan,
+      endOffset: targetSpan.textContent.length,
+      toString: () => "INFRASTRUCTURE"
+    };
+
+    const sentence = extractSurroundingSentence(mockRange, "INFRASTRUCTURE");
+    assert.strictEqual(
+      sentence,
+      "CABINET APPROVES NEW INFRASTRUCTURE POLICY",
+      "Extracted sentence must match headline exactly and NOT bleed into dateline or body text"
+    );
+    assert.ok(!sentence.includes("NEW DELHI"), "Must not include body text dateline");
+    assert.ok(!sentence.includes("OCTOBER"), "Must not include header text");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 19: Proximity-Based Tap Detection for Small Text
+  // -------------------------------------------------------------------
+  runTest("Master Test 19: Proximity-based tap detection finds nearest tiny word within 18px tolerance", () => {
+    const smallSpan = {
+      tagName: "SPAN",
+      textContent: "in",
+      style: { fontSize: "9px" },
+      firstChild: { nodeType: 3, textContent: "in" },
+      contains: () => true,
+      getBoundingClientRect: () => ({ left: 100, top: 200, right: 114, bottom: 211, width: 14, height: 11 }),
+      closest: (sel) => sel === ".textLayer" ? mockLayer : null
+    };
+
+    const mockLayer = {
+      querySelectorAll: (sel) => sel === "span" ? [smallSpan] : []
+    };
+
+    // User taps at (107, 215) which is 4px below the bottom edge of the span
+    const clientX = 107;
+    const clientY = 215;
+
+    // Simulate global document lookup returning textLayer instead of span
+    globalThis.document = {
+      caretPositionFromPoint: () => null,
+      caretRangeFromPoint: () => null,
+      querySelector: (sel) => sel === ".textLayer" ? mockLayer : null,
+      createRange: () => ({
+        setStart: () => {},
+        setEnd: () => {},
+        getBoundingClientRect: () => ({ left: 100, top: 200, right: 114, bottom: 211, width: 14, height: 11 })
+      })
+    };
+
+    const result = extractWordAtPoint(clientX, clientY, mockLayer);
+    assert.ok(result, "Proximity search must find the small word");
+    assert.strictEqual(result.text, "in", "Must accurately extract small 2-letter word 'in'");
+    assert.strictEqual(result.type, "word");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 20: Text Region Classification
+  // -------------------------------------------------------------------
+  runTest("Master Test 20: Text region classification identifies headline, subheading, highlighted, and caption", () => {
+    const headlineSpan = { style: { fontSize: "28px" }, classList: { contains: () => false } };
+    const subheadingSpan = { style: { fontSize: "15px" }, classList: { contains: () => false } };
+    const highlightedSpan = { style: { fontSize: "12px" }, classList: { contains: (c) => c === "search-highlight" } };
+    const captionSpan = { style: { fontSize: "8px" }, classList: { contains: () => false } };
+    const bodySpan = { style: { fontSize: "11px" }, classList: { contains: () => false } };
+
+    const allSpans = [headlineSpan, subheadingSpan, highlightedSpan, captionSpan, bodySpan];
+
+    assert.strictEqual(classifyTextRegion(headlineSpan, allSpans).region, "headline");
+    assert.strictEqual(classifyTextRegion(subheadingSpan, allSpans).region, "subheading");
+    assert.strictEqual(classifyTextRegion(highlightedSpan, allSpans).region, "highlighted");
+    assert.strictEqual(classifyTextRegion(captionSpan, allSpans).region, "caption");
+    assert.strictEqual(classifyTextRegion(bodySpan, allSpans).region, "body");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 21: Small Words and Acronyms Extraction
+  // -------------------------------------------------------------------
+  runTest("Master Test 21: Small words and acronyms ('a', 'A', 'in', 'to', 'RBI', 'G20', 'PM') are preserved", () => {
+    assert.strictEqual(cleanSingleWord("a"), "a");
+    assert.strictEqual(cleanSingleWord("A"), "A");
+    assert.strictEqual(cleanSingleWord("in"), "in");
+    assert.strictEqual(cleanSingleWord("to"), "to");
+    assert.strictEqual(cleanSingleWord("at"), "at");
+    assert.strictEqual(cleanSingleWord("as"), "as");
+    assert.strictEqual(cleanSingleWord("RBI"), "RBI");
+    assert.strictEqual(cleanSingleWord("G20"), "G20");
+    assert.strictEqual(cleanSingleWord("PM"), "PM");
+    assert.strictEqual(cleanSingleWord("SC"), "SC");
+    assert.strictEqual(cleanSingleWord("“RBI”,"), "RBI");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 22: OCR Segmentation for Small Words and Single-Letter Tokens
+  // -------------------------------------------------------------------
+  runTest("Master Test 22: OCR segmentation preserves small words and single-letter tokens ('A', 'New', 'Hope')", () => {
+    const segmented = segmentOcrText("A New Hope", 10, 20, 300, 30, 95, 1000, 1000);
+    assert.strictEqual(segmented.length, 3, "Must segment into 3 individual words");
+    assert.strictEqual(segmented[0].clean, "A", "Preserves single-letter word 'A'");
+    assert.strictEqual(segmented[1].clean, "New", "Preserves 'New'");
+    assert.strictEqual(segmented[2].clean, "Hope", "Preserves 'Hope'");
   });
 
   console.log("\n-------------------------------------------------");

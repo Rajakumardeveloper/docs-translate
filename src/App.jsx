@@ -121,6 +121,29 @@ export default function App() {
   const activeTargetElRef = useRef(null);
   const pinchDistRef = useRef(null);
   const pinchStartScaleRef = useRef(1.0);
+  const pinchMidpointRef = useRef({ x: 0, y: 0 });
+  const pinchOriginRef = useRef({ x: 0, y: 0 });
+  const pinchStartScrollRef = useRef({ left: 0, top: 0 });
+  const isPinchingRef = useRef(false);
+  const currentPinchRatioRef = useRef(1.0);
+  const rafIdRef = useRef(null);
+  const pendingScrollRef = useRef(null);
+  const isMousePanningRef = useRef(false);
+  const mouseDragStartRef = useRef({ startX: 0, startY: 0, scrollLeft: 0, scrollTop: 0, hasMoved: false });
+
+  // Apply focal-point preserving scroll offset after scale change
+  useEffect(() => {
+    if (pendingScrollRef.current && readerAreaRef.current) {
+      const { left, top } = pendingScrollRef.current;
+      pendingScrollRef.current = null;
+      requestAnimationFrame(() => {
+        if (readerAreaRef.current) {
+          readerAreaRef.current.scrollLeft = left;
+          readerAreaRef.current.scrollTop = top;
+        }
+      });
+    }
+  }, [scale]);
 
   // Background OCR Pipeline Refs (Phase 3 & 4)
   const activeOcrPageRef = useRef(null);
@@ -631,6 +654,12 @@ export default function App() {
       // If clicking inside the popup, let popup buttons handle their events
       if (popupRef.current && e?.target && popupRef.current.contains(e.target)) return;
 
+      // If user was dragging/panning the document with mouse, do not trigger word selection
+      if (mouseDragStartRef.current.hasMoved) {
+        mouseDragStartRef.current.hasMoved = false;
+        return;
+      }
+
       // Prevent accidental ghost selection immediately after dismissal
       if (Date.now() - justDismissedTimeRef.current < 400) {
         return;
@@ -688,8 +717,8 @@ export default function App() {
       const targetEl = e.target || (typeof document !== "undefined" && clientX && clientY ? document.elementFromPoint(clientX, clientY) : null);
       const textSpan = targetEl?.closest?.(".textLayer span");
 
-      if (!isScannedPage && textSpan && clientX && clientY) {
-        const foundWord = extractWordAtPoint(clientX, clientY, textSpan);
+      if (!isScannedPage && clientX && clientY) {
+        const foundWord = extractWordAtPoint(clientX, clientY, textSpan || targetEl);
         if (foundWord && foundWord.text && foundWord.text.trim()) {
           const rect = foundWord.rect;
           const textSig = foundWord.text.trim().toLowerCase();
@@ -700,7 +729,7 @@ export default function App() {
             return;
           }
 
-          openMeaning({ ...foundWord, targetEl: textSpan });
+          openMeaning({ ...foundWord, targetEl: textSpan || targetEl });
           return;
         }
       }
@@ -745,8 +774,8 @@ export default function App() {
       }
 
       // Fallback for text span click if page wasn't flagged as non-scanned
-      if (textSpan && clientX && clientY) {
-        const foundWord = extractWordAtPoint(clientX, clientY, textSpan);
+      if (clientX && clientY) {
+        const foundWord = extractWordAtPoint(clientX, clientY, textSpan || targetEl);
         if (foundWord && foundWord.text && foundWord.text.trim()) {
           const rect = foundWord.rect;
           const textSig = foundWord.text.trim().toLowerCase();
@@ -757,7 +786,7 @@ export default function App() {
             return;
           }
 
-          openMeaning({ ...foundWord, targetEl: textSpan });
+          openMeaning({ ...foundWord, targetEl: textSpan || targetEl });
           return;
         }
       }
@@ -856,33 +885,154 @@ export default function App() {
     };
   }, [processSelectionOrClick]);
 
-  // Two-finger pinch zoom gesture for mobile devices
+  // Two-finger responsive pinch zoom gesture with focal-point midpoint tracking
+  // Uses transient hardware-accelerated CSS transforms during gesture and single sharp PDF render on commit
   const handleReaderTouchStart = (e) => {
     if (e.touches && e.touches.length === 2) {
-      const dist = Math.hypot(
-        e.touches[0].clientX - e.touches[1].clientX,
-        e.touches[0].clientY - e.touches[1].clientY
-      );
+      const t1 = e.touches[0];
+      const t2 = e.touches[1];
+      const dist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
       pinchDistRef.current = dist;
       pinchStartScaleRef.current = scale;
+      currentPinchRatioRef.current = 1.0;
+      isPinchingRef.current = true;
+
+      const midX = (t1.clientX + t2.clientX) / 2;
+      const midY = (t1.clientY + t2.clientY) / 2;
+      pinchMidpointRef.current = { x: midX, y: midY };
+
+      const reader = readerAreaRef.current;
+      if (reader) {
+        pinchStartScrollRef.current = { left: reader.scrollLeft, top: reader.scrollTop };
+      }
+
+      if (pagePaperRef.current) {
+        const paperRect = pagePaperRef.current.getBoundingClientRect();
+        pinchOriginRef.current = {
+          x: midX - paperRect.left,
+          y: midY - paperRect.top
+        };
+      }
+      closePopup();
     }
   };
 
   const handleReaderTouchMove = (e) => {
-    if (e.touches && e.touches.length === 2 && pinchDistRef.current) {
-      const dist = Math.hypot(
-        e.touches[0].clientX - e.touches[1].clientX,
-        e.touches[0].clientY - e.touches[1].clientY
-      );
-      const ratio = dist / pinchDistRef.current;
-      const newScale = Math.min(2.5, Math.max(0.6, +(pinchStartScaleRef.current * ratio).toFixed(2)));
-      setScale(newScale);
+    if (isPinchingRef.current && e.touches && e.touches.length === 2 && pinchDistRef.current) {
+      e.preventDefault();
+      const t1 = e.touches[0];
+      const t2 = e.touches[1];
+      const dist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
+      const rawRatio = dist / pinchDistRef.current;
+      const clampedRatio = Math.min(3.0 / pinchStartScaleRef.current, Math.max(0.5 / pinchStartScaleRef.current, rawRatio));
+      currentPinchRatioRef.current = clampedRatio;
+
+      const currMidX = (t1.clientX + t2.clientX) / 2;
+      const currMidY = (t1.clientY + t2.clientY) / 2;
+      const panX = currMidX - pinchMidpointRef.current.x;
+      const panY = currMidY - pinchMidpointRef.current.y;
+
+      if (!rafIdRef.current) {
+        rafIdRef.current = requestAnimationFrame(() => {
+          rafIdRef.current = null;
+          if (pagePaperRef.current && isPinchingRef.current) {
+            pagePaperRef.current.style.transformOrigin = `${pinchOriginRef.current.x}px ${pinchOriginRef.current.y}px`;
+            pagePaperRef.current.style.transform = `translate3d(${panX}px, ${panY}px, 0) scale(${clampedRatio})`;
+            pagePaperRef.current.style.willChange = "transform";
+          }
+        });
+      }
     }
   };
 
   const handleReaderTouchEnd = (e) => {
-    if (!e.touches || e.touches.length < 2) {
+    if (isPinchingRef.current && (!e.touches || e.touches.length < 2)) {
+      isPinchingRef.current = false;
+      if (rafIdRef.current) {
+        cancelAnimationFrame(rafIdRef.current);
+        rafIdRef.current = null;
+      }
+
+      const finalRatio = currentPinchRatioRef.current;
+      const finalScale = Math.min(3.0, Math.max(0.5, +(pinchStartScaleRef.current * finalRatio).toFixed(2)));
+
+      const reader = readerAreaRef.current;
+      if (reader) {
+        const readerRect = reader.getBoundingClientRect();
+        const focalX = pinchMidpointRef.current.x - readerRect.left + pinchStartScrollRef.current.left;
+        const focalY = pinchMidpointRef.current.y - readerRect.top + pinchStartScrollRef.current.top;
+        const targetScrollLeft = focalX * (finalScale / pinchStartScaleRef.current) - (pinchMidpointRef.current.x - readerRect.left);
+        const targetScrollTop = focalY * (finalScale / pinchStartScaleRef.current) - (pinchMidpointRef.current.y - readerRect.top);
+
+        pendingScrollRef.current = {
+          left: Math.max(0, targetScrollLeft),
+          top: Math.max(0, targetScrollTop)
+        };
+      }
+
+      if (pagePaperRef.current) {
+        pagePaperRef.current.style.transform = "";
+        pagePaperRef.current.style.transformOrigin = "";
+        pagePaperRef.current.style.willChange = "";
+      }
+
       pinchDistRef.current = null;
+      if (Math.abs(finalScale - scale) > 0.02) {
+        setScale(finalScale);
+      }
+    }
+  };
+
+  // Desktop mouse drag panning for unrestricted 2D navigation (left, right, up, down, diagonal)
+  const handleMouseDown = (e) => {
+    if (popupRef.current && popupRef.current.contains(e.target)) return;
+    if (e.target?.closest?.("button, input, select, textarea, a")) return;
+
+    const isMiddle = e.button === 1;
+    const isLeftOnNonText = e.button === 0 && !e.target?.closest?.(".textLayer span");
+
+    if (isMiddle || isLeftOnNonText) {
+      const reader = readerAreaRef.current;
+      if (reader) {
+        mouseDragStartRef.current = {
+          startX: e.clientX,
+          startY: e.clientY,
+          scrollLeft: reader.scrollLeft,
+          scrollTop: reader.scrollTop,
+          hasMoved: false,
+          isMiddle
+        };
+        isMousePanningRef.current = true;
+        if (isMiddle) e.preventDefault();
+      }
+    }
+  };
+
+  const handleMouseMove = (e) => {
+    if (!isMousePanningRef.current) return;
+    const reader = readerAreaRef.current;
+    if (!reader) return;
+
+    const dx = e.clientX - mouseDragStartRef.current.startX;
+    const dy = e.clientY - mouseDragStartRef.current.startY;
+
+    if (Math.hypot(dx, dy) > 5) {
+      mouseDragStartRef.current.hasMoved = true;
+      reader.scrollLeft = mouseDragStartRef.current.scrollLeft - dx;
+      reader.scrollTop = mouseDragStartRef.current.scrollTop - dy;
+      if (!reader.classList.contains("panning")) {
+        reader.classList.add("panning");
+      }
+    }
+  };
+
+  const handleMouseUp = (e) => {
+    if (isMousePanningRef.current) {
+      isMousePanningRef.current = false;
+      const reader = readerAreaRef.current;
+      if (reader) {
+        reader.classList.remove("panning");
+      }
     }
   };
 
@@ -936,16 +1086,41 @@ export default function App() {
     }
   };
 
-  // Zoom controls (closes any open popup and never triggers translation)
-  const zoomIn = () => { closePopup(); setScale((s) => Math.min(2.5, +(s + 0.15).toFixed(2))); };
-  const zoomOut = () => { closePopup(); setScale((s) => Math.max(0.5, +(s - 0.15).toFixed(2))); };
-  const zoomReset = () => { closePopup(); setScale(1.0); };
-  const cycleZoom = () => {
+  // Zoom controls with focal point preservation (closes open popup and preserves viewport center)
+  const changeScaleWithFocalPoint = useCallback((targetScale) => {
+    const clamped = Math.min(3.0, Math.max(0.5, +targetScale.toFixed(2)));
+    if (Math.abs(clamped - scale) < 0.01) return;
     closePopup();
-    const levels = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0];
+
+    const reader = readerAreaRef.current;
+    if (reader) {
+      const readerRect = reader.getBoundingClientRect();
+      const centerX = readerRect.width / 2;
+      const centerY = readerRect.height / 2;
+      const focalX = reader.scrollLeft + centerX;
+      const focalY = reader.scrollTop + centerY;
+      const ratio = clamped / scale;
+
+      const targetScrollLeft = focalX * ratio - centerX;
+      const targetScrollTop = focalY * ratio - centerY;
+
+      pendingScrollRef.current = {
+        left: Math.max(0, targetScrollLeft),
+        top: Math.max(0, targetScrollTop)
+      };
+    }
+
+    setScale(clamped);
+  }, [scale, closePopup]);
+
+  const zoomIn = () => changeScaleWithFocalPoint(scale + 0.2);
+  const zoomOut = () => changeScaleWithFocalPoint(scale - 0.2);
+  const zoomReset = () => changeScaleWithFocalPoint(1.0);
+  const cycleZoom = () => {
+    const levels = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
     const currIdx = levels.findIndex((l) => Math.abs(l - scale) < 0.1);
     const nextIdx = (currIdx + 1) % levels.length;
-    setScale(levels[nextIdx]);
+    changeScaleWithFocalPoint(levels[nextIdx]);
   };
 
   // Fullscreen toggle
@@ -1147,7 +1322,7 @@ export default function App() {
           <button
             className="zoom-button"
             onClick={zoomIn}
-            disabled={!file || scale >= 2.5}
+            disabled={!file || scale >= 3.0}
             aria-label="ज़ूम बढ़ाएँ (Zoom in)"
             title="Zoom In"
           >
@@ -1252,6 +1427,10 @@ export default function App() {
         onTouchStart={handleReaderTouchStart}
         onTouchMove={handleReaderTouchMove}
         onTouchEnd={handleReaderTouchEnd}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
       >
         {!file ? (
           <div className="welcome-card">

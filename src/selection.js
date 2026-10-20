@@ -44,7 +44,8 @@ export function segmentOcrText(rawText, left, top, width, height, conf, imageW, 
   // Single word token
   if (wordTokens.length === 1) {
     const clean = cleanSingleWord(wordTokens[0]);
-    if (!clean || clean.length < 2) return [];
+    const isSingleValid = ["a", "i", "A", "I"].includes(clean);
+    if (!clean || (clean.length < 2 && !isSingleValid)) return [];
     return [{
       text: wordTokens[0],
       clean,
@@ -65,8 +66,9 @@ export function segmentOcrText(rawText, left, top, width, height, conf, imageW, 
 
   for (const token of wordTokens) {
     const clean = cleanSingleWord(token);
+    const isSingleValid = ["a", "i", "A", "I"].includes(clean);
     const tokenW = Math.max(1, Math.round((Math.max(1, token.length) / totalChars) * width));
-    if (clean && clean.length >= 2) {
+    if (clean && (clean.length >= 2 || isSingleValid)) {
       results.push({
         text: token,
         clean,
@@ -161,6 +163,70 @@ export function getNextSpanWordSuffix(span) {
   return suffix;
 }
 
+// Estimate font size of a PDF text span
+export function getSpanFontSize(span) {
+  if (!span) return 12;
+  try {
+    if (span.style && span.style.fontSize) {
+      const fs = parseFloat(span.style.fontSize);
+      if (!isNaN(fs) && fs > 0) return fs;
+    }
+    if (span.getBoundingClientRect) {
+      const r = span.getBoundingClientRect();
+      if (r && r.height > 0) return r.height;
+    }
+  } catch {}
+  return 12;
+}
+
+// Classify layout region: 'headline' | 'subheading' | 'highlighted' | 'body' | 'caption'
+export function classifyTextRegion(span, allSpans) {
+  if (!span) return { region: "body", fontSize: 12, isBold: false, isHighlighted: false };
+  let fontSize = 12;
+  let isBold = false;
+  let isHighlighted = false;
+
+  try {
+    fontSize = getSpanFontSize(span);
+    const computed = typeof window !== "undefined" && window.getComputedStyle ? window.getComputedStyle(span) : null;
+    if (computed) {
+      const weight = computed.fontWeight;
+      if (weight === "bold" || parseInt(weight, 10) >= 600) {
+        isBold = true;
+      }
+      const bg = computed.backgroundColor;
+      if (bg && bg !== "transparent" && bg !== "rgba(0, 0, 0, 0)" && !bg.includes("255, 255, 255")) {
+        isHighlighted = true;
+      }
+    }
+    if (span.classList?.contains("search-highlight") || span.closest?.(".pdf-word-highlight") || span.closest?.(".ocr-word-span.active")) {
+      isHighlighted = true;
+    }
+  } catch {}
+
+  // Compare with median font size if allSpans provided
+  let medianFs = 12;
+  if (Array.isArray(allSpans) && allSpans.length > 0) {
+    const sizes = allSpans.map(getSpanFontSize).filter(s => s > 0).sort((a, b) => a - b);
+    if (sizes.length > 0) {
+      medianFs = sizes[Math.floor(sizes.length / 2)];
+    }
+  }
+
+  let region = "body";
+  if (isHighlighted) {
+    region = "highlighted";
+  } else if (fontSize >= Math.max(18, medianFs * 1.5) || (fontSize >= Math.max(15, medianFs * 1.3) && isBold)) {
+    region = "headline";
+  } else if (fontSize >= Math.max(13, medianFs * 1.15) || isBold) {
+    region = "subheading";
+  } else if (fontSize <= Math.min(9, medianFs * 0.8)) {
+    region = "caption";
+  }
+
+  return { region, fontSize, isBold, isHighlighted };
+}
+
 // Extract surrounding sentence boundary from PDF textLayer spans or local context
 export function extractSurroundingSentence(range, normalizedText) {
   if (!range) return "";
@@ -179,10 +245,39 @@ export function extractSurroundingSentence(range, normalizedText) {
       const currentIdx = allSpans.indexOf(startSpan);
 
       if (currentIdx !== -1) {
-        // Gather a window of spans around current selection (up to 15 spans before and after)
-        const windowStart = Math.max(0, currentIdx - 15);
-        const windowEnd = Math.min(allSpans.length, currentIdx + 16);
-        const windowSpans = allSpans.slice(windowStart, windowEnd);
+        const startFontSize = getSpanFontSize(startSpan);
+
+        // Gather spans around current selection with structural boundary awareness (headlines vs body)
+        let windowStart = currentIdx;
+        while (windowStart > 0 && windowStart > currentIdx - 15) {
+          const prevSpan = allSpans[windowStart - 1];
+          const prevFs = getSpanFontSize(prevSpan);
+          // Stop at major font-size transition between headline and body text (> 35% difference)
+          if (startFontSize > 0 && prevFs > 0 && Math.abs(prevFs - startFontSize) / Math.max(prevFs, startFontSize) > 0.35) {
+            break;
+          }
+          const prevText = (prevSpan.textContent || "").trim();
+          if (/[.?!]$/.test(prevText)) {
+            break;
+          }
+          windowStart--;
+        }
+
+        let windowEnd = currentIdx;
+        while (windowEnd < allSpans.length - 1 && windowEnd < currentIdx + 15) {
+          const nextSpan = allSpans[windowEnd + 1];
+          const nextFs = getSpanFontSize(nextSpan);
+          if (startFontSize > 0 && nextFs > 0 && Math.abs(nextFs - startFontSize) / Math.max(nextFs, startFontSize) > 0.35) {
+            break;
+          }
+          const currText = (allSpans[windowEnd].textContent || "").trim();
+          if (/[.?!]$/.test(currText)) {
+            break;
+          }
+          windowEnd++;
+        }
+
+        const windowSpans = allSpans.slice(windowStart, windowEnd + 1);
 
         // Concatenate text while fixing line-break hyphenations
         let combined = "";
@@ -219,6 +314,10 @@ export function extractSurroundingSentence(range, normalizedText) {
           if (sentence.length >= targetClean.length) {
             return sentence;
           }
+        }
+
+        if (combined.length >= targetClean.length) {
+          return combined;
         }
       }
     }
@@ -381,10 +480,45 @@ export function extractWordAtPoint(clientX, clientY, target) {
     }
   }
 
-  const span = (target?.tagName === "SPAN" ? target : null) ||
+  let span = (target?.tagName === "SPAN" ? target : null) ||
                target?.closest?.(".textLayer span") ||
                target?.closest?.("span") ||
                (textNode?.parentElement?.tagName === "SPAN" ? textNode.parentElement : textNode?.parentElement?.closest?.("span"));
+
+  // Euclidean proximity fallback for small text or taps landing near glyph edges (tolerance: 18px)
+  if (!span && typeof document !== "undefined" && clientX && clientY) {
+    const textLayer = target?.closest?.(".textLayer") || document.querySelector(".textLayer");
+    if (textLayer && typeof textLayer.querySelectorAll === "function") {
+      const candidates = Array.from(textLayer.querySelectorAll("span"));
+      let bestDist = Infinity;
+      let bestSpan = null;
+      for (const s of candidates) {
+        const textContent = s.textContent || "";
+        if (!textContent.trim()) continue;
+        if (s.getBoundingClientRect) {
+          const r = s.getBoundingClientRect();
+          const dx = Math.max(0, r.left - clientX, clientX - r.right);
+          const dy = Math.max(0, r.top - clientY, clientY - r.bottom);
+          const dist = Math.hypot(dx, dy);
+          if (dist < bestDist) {
+            bestDist = dist;
+            bestSpan = s;
+          }
+        }
+      }
+      if (bestSpan && bestDist <= 18) {
+        span = bestSpan;
+        textNode = span.firstChild || span;
+        const sRect = span.getBoundingClientRect();
+        const textLen = (span.textContent || "").length;
+        if (textLen > 0 && sRect.width > 0) {
+          const frac = Math.max(0, Math.min(1, (clientX - sRect.left) / sRect.width));
+          offset = Math.min(textLen - 1, Math.floor(frac * textLen));
+        }
+      }
+    }
+  }
+
   if (!span) return null;
 
   if (!textNode || (span.contains && !span.contains(textNode))) {
@@ -402,7 +536,22 @@ export function extractWordAtPoint(clientX, clientY, target) {
     } else if (offset + 1 < text.length && !/\s/.test(text[offset + 1])) {
       offset = offset + 1;
     } else {
-      return null;
+      let found = -1;
+      for (let delta = 1; delta <= 3; delta++) {
+        if (offset - delta >= 0 && !/\s/.test(text[offset - delta])) {
+          found = offset - delta;
+          break;
+        }
+        if (offset + delta < text.length && !/\s/.test(text[offset + delta])) {
+          found = offset + delta;
+          break;
+        }
+      }
+      if (found !== -1) {
+        offset = found;
+      } else {
+        return null;
+      }
     }
   }
 
@@ -462,13 +611,17 @@ export function extractWordAtPoint(clientX, clientY, target) {
     getBoundingClientRect: () => rect
   };
   const sentence = extractSurroundingSentence(mockRange, cleanWord);
+  const regionInfo = classifyTextRegion(span);
 
   return {
     type: "word",
     text: cleanWord,
     wordCount: 1,
     rect,
-    sentence: sentence || ""
+    sentence: sentence || "",
+    region: regionInfo.region,
+    fontSize: regionInfo.fontSize,
+    isBold: regionInfo.isBold
   };
 }
 
