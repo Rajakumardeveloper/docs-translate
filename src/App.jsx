@@ -87,12 +87,18 @@ export default function App() {
   const ocrCache = useRef(new Map());
 
   // PDF.js options to support diverse newspaper encodings, CMaps, and standard fonts
-  const pdfOptions = useMemo(() => ({
-    cMapUrl: "/cmaps/",
-    cMapPacked: true,
-    standardFontDataUrl: "/standard_fonts/",
-    enableXfa: true
-  }), []);
+  const pdfOptions = useMemo(() => {
+    let pathname = typeof window !== "undefined" ? window.location.pathname : "/";
+    if (!pathname.endsWith("/")) pathname += "/";
+    const base = typeof window !== "undefined" ? window.location.origin + pathname : "/";
+
+    return {
+      cMapUrl: new URL("cmaps/", base).href,
+      cMapPacked: true,
+      standardFontDataUrl: new URL("standard_fonts/", base).href,
+      enableXfa: true
+    };
+  }, []);
 
   // Safely close active dictionary/translation popup and abort any in-flight requests
   const closePopup = useCallback(() => {
