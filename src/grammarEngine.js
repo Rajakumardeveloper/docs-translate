@@ -114,7 +114,7 @@ export const POLYSEMOUS_WORDS = {
   },
   book: {
     noun: {
-      meaning: "किताब / पुस्तक",
+      meaning: "किताब",
       alternatives: ["किताब", "पुस्तक", "ग्रंथ"],
       contextDistinction: "यहाँ 'book' का अर्थ 'किताब' (Noun) है, न कि 'टिकट बुक करना' (Verb)।",
       grammarExplanation: "वाक्य में 'book' एक Noun (संज्ञा) है, जो पढ़ने की सामग्री या ग्रंथ को दर्शाता है।",

@@ -1,5 +1,5 @@
 // ReadHindi Selection and Viewport Geometry Helper
-// Robust multi-word phrase extraction, single-word boundary extraction, and positioning
+// Robust multi-word phrase extraction, single-word boundary extraction, cross-span word reconstruction, and positioning
 
 // Clean a single word for dictionary lookup
 export function cleanSingleWord(raw) {
@@ -29,6 +29,65 @@ export function normalizeSelectionText(raw) {
   return text;
 }
 
+// Determine if two PDF textLayer spans are visually on the same line and adjacent
+export function areSpansAdjacent(s1, s2) {
+  if (!s1 || !s2 || s1 === s2) return false;
+  try {
+    const r1 = s1.getBoundingClientRect ? s1.getBoundingClientRect() : null;
+    const r2 = s2.getBoundingClientRect ? s2.getBoundingClientRect() : null;
+    if (r1 && r2 && (r1.width > 0 || r1.height > 0) && (r2.width > 0 || r2.height > 0)) {
+      const vOverlap = Math.min(r1.bottom, r2.bottom) - Math.max(r1.top, r2.top);
+      const minH = Math.min(r1.height, r2.height);
+      const isSameLine = vOverlap >= minH * 0.35 || Math.abs(r1.top - r2.top) <= Math.max(6, minH * 0.5);
+      if (!isSameLine) return false;
+      const gap = r2.left - r1.right;
+      return gap >= -8 && gap <= 8;
+    }
+  } catch {}
+  // Fallback for mock environments (e.g. Node tests with sibling DOM elements)
+  return s1.parentElement === s2.parentElement;
+}
+
+// Scan backwards in adjacent previous spans for word characters continuing this word (e.g., "S" before "pecial")
+export function getPreviousSpanWordPrefix(span) {
+  let prefix = "";
+  let curr = span?.previousElementSibling;
+  while (curr && curr.tagName === "SPAN" && areSpansAdjacent(curr, curr.nextElementSibling)) {
+    const text = curr.textContent || "";
+    if (!text) break;
+    if (/\s$/.test(text)) break;
+    const match = text.match(/[A-Za-z0-9'’\-]+$/);
+    if (match) {
+      prefix = match[0] + prefix;
+      if (match[0].length < text.length) break;
+    } else {
+      break;
+    }
+    curr = curr.previousElementSibling;
+  }
+  return prefix;
+}
+
+// Scan forwards in adjacent next spans for word characters continuing this word
+export function getNextSpanWordSuffix(span) {
+  let suffix = "";
+  let curr = span?.nextElementSibling;
+  while (curr && curr.tagName === "SPAN" && areSpansAdjacent(curr.previousElementSibling, curr)) {
+    const text = curr.textContent || "";
+    if (!text) break;
+    if (/^\s/.test(text)) break;
+    const match = text.match(/^[A-Za-z0-9'’\-]+/);
+    if (match) {
+      suffix += match[0];
+      if (match[0].length < text.length) break;
+    } else {
+      break;
+    }
+    curr = curr.nextElementSibling;
+  }
+  return suffix;
+}
+
 // Extract surrounding sentence boundary from PDF textLayer spans or local context
 export function extractSurroundingSentence(range, normalizedText) {
   if (!range) return "";
@@ -41,7 +100,7 @@ export function extractSurroundingSentence(range, normalizedText) {
 
     // 2. Check if inside PDF.js text layer
     const textLayer = startSpan.closest?.(".textLayer");
-    if (textLayer) {
+    if (textLayer && typeof textLayer.querySelectorAll === "function") {
       // PDF.js text layer contains sibling <span> elements in reading order
       const allSpans = Array.from(textLayer.querySelectorAll("span"));
       const currentIdx = allSpans.indexOf(startSpan);
@@ -129,7 +188,7 @@ export function expandRangeToSelection(range) {
     return null;
   }
 
-  const rect = range.getBoundingClientRect();
+  const rect = range.getBoundingClientRect ? range.getBoundingClientRect() : { left: 0, top: 0, width: 0, height: 0 };
 
   // Extract clean surrounding sentence from PDF textLayer spans or local context
   const extractedSentence = extractSurroundingSentence(range, normalized);
@@ -164,9 +223,44 @@ export function expandRangeToSelection(range) {
     };
   }
 
-  // CASE 2: SINGLE WORD SELECTION (e.g. "Constitution", "reforms")
-  const singleClean = cleanSingleWord(normalized);
+  // CASE 2: SINGLE WORD SELECTION (e.g. "Constitution", "reforms", or "Special")
+  let singleClean = cleanSingleWord(normalized);
   if (singleClean && singleClean.length >= 1 && /[A-Za-z]/.test(singleClean)) {
+    // Check if initial capital letter or word continuation was split across PDF textLayer spans
+    try {
+      const isTextNode = range.startContainer?.nodeType === (typeof Node !== "undefined" ? Node.TEXT_NODE : 3);
+      const startSpan = isTextNode ? range.startContainer.parentElement : range.startContainer;
+
+      if (startSpan?.closest?.(".textLayer")) {
+        const textInSpan = startSpan.textContent || "";
+        const startOff = typeof range.startOffset === "number" ? range.startOffset : 0;
+        const leadingText = textInSpan.slice(0, startOff);
+
+        // If selection starts at the beginning of the span or has no preceding non-whitespace
+        if (!leadingText || !/\S/.test(leadingText)) {
+          const prefix = getPreviousSpanWordPrefix(startSpan);
+          if (prefix) {
+            singleClean = cleanSingleWord(prefix + singleClean);
+          }
+        }
+
+        const endIsTextNode = range.endContainer?.nodeType === (typeof Node !== "undefined" ? Node.TEXT_NODE : 3);
+        const endSpan = endIsTextNode ? range.endContainer.parentElement : range.endContainer;
+        const textInEndSpan = endSpan?.textContent || "";
+        const endOff = typeof range.endOffset === "number" ? range.endOffset : textInEndSpan.length;
+        const trailingText = textInEndSpan.slice(endOff);
+
+        if (!trailingText || !/\S/.test(trailingText)) {
+          const suffix = getNextSpanWordSuffix(endSpan);
+          if (suffix) {
+            singleClean = cleanSingleWord(singleClean + suffix);
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Span expansion warning:", e);
+    }
+
     return {
       type: "word",
       text: singleClean,
@@ -179,8 +273,134 @@ export function expandRangeToSelection(range) {
   return null;
 }
 
+// Extract the exact word at a click or tap point in the PDF text layer
+export function extractWordAtPoint(clientX, clientY, target) {
+  let textNode = null;
+  let offset = 0;
+
+  if (typeof document !== "undefined") {
+    if (document.caretPositionFromPoint) {
+      try {
+        const pos = document.caretPositionFromPoint(clientX, clientY);
+        if (pos && pos.offsetNode) {
+          if (pos.offsetNode.nodeType === (typeof Node !== "undefined" ? Node.TEXT_NODE : 3)) {
+            textNode = pos.offsetNode;
+            offset = pos.offset;
+          } else if (pos.offsetNode.nodeType === (typeof Node !== "undefined" ? Node.ELEMENT_NODE : 1)) {
+            textNode = pos.offsetNode.firstChild;
+            offset = 0;
+          }
+        }
+      } catch {}
+    } else if (document.caretRangeFromPoint) {
+      try {
+        const r = document.caretRangeFromPoint(clientX, clientY);
+        if (r && r.startContainer) {
+          if (r.startContainer.nodeType === (typeof Node !== "undefined" ? Node.TEXT_NODE : 3)) {
+            textNode = r.startContainer;
+            offset = r.startOffset;
+          } else if (r.startContainer.nodeType === (typeof Node !== "undefined" ? Node.ELEMENT_NODE : 1)) {
+            textNode = r.startContainer.firstChild;
+            offset = 0;
+          }
+        }
+      } catch {}
+    }
+  }
+
+  const span = (target?.tagName === "SPAN" ? target : null) ||
+               target?.closest?.(".textLayer span") ||
+               target?.closest?.("span") ||
+               (textNode?.parentElement?.tagName === "SPAN" ? textNode.parentElement : textNode?.parentElement?.closest?.("span"));
+  if (!span) return null;
+
+  if (!textNode || (span.contains && !span.contains(textNode))) {
+    textNode = span.firstChild || span;
+    offset = 0;
+  }
+
+  const text = span.textContent || "";
+  if (!text || text.trim().length === 0) return null;
+
+  if (offset >= text.length) offset = Math.max(0, text.length - 1);
+  if (/\s/.test(text[offset])) {
+    if (offset > 0 && !/\s/.test(text[offset - 1])) {
+      offset = offset - 1;
+    } else if (offset + 1 < text.length && !/\s/.test(text[offset + 1])) {
+      offset = offset + 1;
+    } else {
+      return null;
+    }
+  }
+
+  let start = offset;
+  let end = offset;
+  while (start > 0 && /[A-Za-z0-9'’\-]/.test(text[start - 1])) {
+    start--;
+  }
+  while (end < text.length && /[A-Za-z0-9'’\-]/.test(text[end])) {
+    end++;
+  }
+
+  let localWord = text.slice(start, end);
+  if (!localWord || !/[A-Za-z0-9]/.test(localWord)) return null;
+
+  let prefix = "";
+  if (start === 0) {
+    prefix = getPreviousSpanWordPrefix(span);
+  }
+
+  let suffix = "";
+  if (end === text.length) {
+    suffix = getNextSpanWordSuffix(span);
+  }
+
+  const rawFullWord = prefix + localWord + suffix;
+  const cleanWord = cleanSingleWord(rawFullWord);
+  if (!cleanWord || !/[A-Za-z]/.test(cleanWord) || (cleanWord.length < 2 && !["a", "i", "A", "I"].includes(cleanWord))) {
+    return null;
+  }
+
+  let rect = span.getBoundingClientRect ? span.getBoundingClientRect() : { left: 0, top: 0, width: 60, height: 20 };
+  try {
+    if (typeof document !== "undefined" && document.createRange && textNode && textNode.nodeType === (typeof Node !== "undefined" ? Node.TEXT_NODE : 3)) {
+      const r = document.createRange();
+      r.setStart(textNode, start);
+      r.setEnd(textNode, end);
+      const localR = r.getBoundingClientRect();
+      const spanR = span.getBoundingClientRect();
+      rect = {
+        left: prefix ? spanR.left : localR.left,
+        top: spanR.top,
+        right: suffix ? spanR.right : localR.right,
+        bottom: spanR.bottom,
+        width: (suffix ? spanR.right : localR.right) - (prefix ? spanR.left : localR.left),
+        height: spanR.height
+      };
+    }
+  } catch {}
+
+  const mockRange = {
+    startContainer: textNode,
+    startOffset: start,
+    endContainer: textNode,
+    endOffset: end,
+    toString: () => cleanWord,
+    getBoundingClientRect: () => rect
+  };
+  const sentence = extractSurroundingSentence(mockRange, cleanWord);
+
+  return {
+    type: "word",
+    text: cleanWord,
+    wordCount: 1,
+    rect,
+    sentence: sentence || ""
+  };
+}
+
 // Calculate clamped floating popup position near target word or phrase (or mobile bottom sheet)
-export function calculatePopupPosition(wordRect, popupWidth = 360, popupHeight = 260) {
+export function calculatePopupPosition(wordRect, popupWidth = 320, popupHeight = 160) {
   const isMobile = typeof window !== "undefined" && window.innerWidth <= 640;
   if (isMobile) {
     return {

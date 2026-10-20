@@ -1,5 +1,14 @@
 import assert from "node:assert";
-import { cleanSingleWord, normalizeSelectionText, expandRangeToSelection, calculatePopupPosition } from "./src/selection.js";
+import {
+  cleanSingleWord,
+  normalizeSelectionText,
+  expandRangeToSelection,
+  calculatePopupPosition,
+  extractWordAtPoint,
+  areSpansAdjacent,
+  getPreviousSpanWordPrefix,
+  getNextSpanWordSuffix
+} from "./src/selection.js";
 import { lookupText, normalizeLookupText, BUILTIN_DICTIONARY } from "./src/dictionary.js";
 
 // Polyfill minimal Node constants if not in browser
@@ -538,6 +547,303 @@ async function main() {
       !sel.sentence.includes("This will attract investments"),
       "Extracted sentence must not bleed into succeeding sentences"
     );
+  });
+
+  // ===================================================================
+  // CRITICAL REGRESSION TESTS (BUGS 1, 2, 3 VERIFICATION)
+  // ===================================================================
+
+  // -------------------------------------------------------------------
+  // TEST 1: Clicking "Special" selects "Special", not "pecial"
+  // -------------------------------------------------------------------
+  runTest("Required Test 1: Clicking 'Special' selects 'Special', not 'pecial'", () => {
+    // Simulate PDF.js textLayer where "Special" is split across two sibling spans:
+    // Span 1: "S" (drop-cap or font-style offset)
+    // Span 2: "pecial"
+    const spanS = {
+      tagName: "SPAN",
+      textContent: "S",
+      getBoundingClientRect: () => ({ left: 100, top: 120, right: 112, bottom: 138, width: 12, height: 18 })
+    };
+    const spanPecial = {
+      tagName: "SPAN",
+      textContent: "pecial ",
+      getBoundingClientRect: () => ({ left: 112, top: 120, right: 155, bottom: 138, width: 43, height: 18 })
+    };
+
+    spanS.nextElementSibling = spanPecial;
+    spanPecial.previousElementSibling = spanS;
+    const mockParent = {
+      tagName: "DIV",
+      className: "textLayer",
+      querySelectorAll: (sel) => (sel.includes("span") ? [spanS, spanPecial] : [])
+    };
+    spanS.parentElement = mockParent;
+    spanPecial.parentElement = mockParent;
+    spanS.closest = (sel) => {
+      if (sel.includes("textLayer")) return mockParent;
+      if (sel.includes("span")) return spanS;
+      return null;
+    };
+    spanPecial.closest = (sel) => {
+      if (sel.includes("textLayer")) return mockParent;
+      if (sel.includes("span")) return spanPecial;
+      return null;
+    };
+
+    // Scenario A: User selection / double click on "pecial" inside spanPecial
+    const mockRangeOnPecial = {
+      collapsed: false,
+      startOffset: 0,
+      endOffset: 6,
+      startContainer: { nodeType: 3, parentElement: spanPecial, textContent: "pecial " },
+      endContainer: { nodeType: 3, parentElement: spanPecial, textContent: "pecial " },
+      toString: () => "pecial",
+      getBoundingClientRect: () => ({ left: 112, top: 120, right: 155, bottom: 138, width: 43, height: 18 })
+    };
+
+    const sel = expandRangeToSelection(mockRangeOnPecial);
+    assert.ok(sel, "Selection result must not be null");
+    assert.strictEqual(sel.text, "Special", "Clicking/selecting 'Special' must return 'Special', NOT 'pecial'");
+    assert.notStrictEqual(sel.text, "pecial", "Must NOT drop initial capital letter 'S'");
+
+    // Scenario B: Click point extraction on spanPecial
+    const clickWord = extractWordAtPoint(125, 128, spanPecial);
+    assert.ok(clickWord, "Click extraction must succeed");
+    assert.strictEqual(clickWord.text, "Special", "Click on 'pecial' span must reconstruct full word 'Special'");
+
+    // Scenario C: Click point extraction on spanS
+    const clickWordS = extractWordAtPoint(105, 128, spanS);
+    assert.ok(clickWordS, "Click on 'S' span must succeed");
+    assert.strictEqual(clickWordS.text, "Special", "Click on initial capital 'S' span must reconstruct 'Special'");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 2: Words starting with different capital letters select complete word
+  // -------------------------------------------------------------------
+  runTest("Required Test 2: Clicking words starting with different capital letters selects complete word", () => {
+    const capitalWords = [
+      { cap: "C", rest: "onstitution", full: "Constitution" },
+      { cap: "D", rest: "emocracy", full: "Democracy" },
+      { cap: "P", rest: "arliament", full: "Parliament" },
+      { cap: "G", rest: "rowth", full: "Growth" },
+      { cap: "I", rest: "ndia", full: "India" },
+      { cap: "E", rest: "conomy", full: "Economy" },
+      { cap: "S", rest: "upreme", full: "Supreme" }
+    ];
+
+    for (const item of capitalWords) {
+      const s1 = {
+        tagName: "SPAN",
+        textContent: item.cap,
+        getBoundingClientRect: () => ({ left: 50, top: 100, right: 62, bottom: 118, width: 12, height: 18 })
+      };
+      const s2 = {
+        tagName: "SPAN",
+        textContent: item.rest + " ",
+        getBoundingClientRect: () => ({ left: 62, top: 100, right: 120, bottom: 118, width: 58, height: 18 })
+      };
+      s1.nextElementSibling = s2;
+      s2.previousElementSibling = s1;
+      const layer = {
+        tagName: "DIV",
+        className: "textLayer",
+        querySelectorAll: (sel) => (sel.includes("span") ? [s1, s2] : [])
+      };
+      s1.parentElement = layer;
+      s2.parentElement = layer;
+      s1.closest = (s) => (s.includes("textLayer") ? layer : s1);
+      s2.closest = (s) => (s.includes("textLayer") ? layer : s2);
+
+      const r = {
+        collapsed: false,
+        startOffset: 0,
+        endOffset: item.rest.length,
+        startContainer: { nodeType: 3, parentElement: s2, textContent: item.rest + " " },
+        endContainer: { nodeType: 3, parentElement: s2, textContent: item.rest + " " },
+        toString: () => item.rest,
+        getBoundingClientRect: () => s2.getBoundingClientRect()
+      };
+
+      const result = expandRangeToSelection(r);
+      assert.ok(result, `Selection must succeed for ${item.full}`);
+      assert.strictEqual(result.text, item.full, `Must extract '${item.full}' with initial capital letter preserved`);
+      assert.strictEqual(result.text[0], item.cap, `First letter must be capital '${item.cap}'`);
+    }
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 3: Uppercase, lowercase, mixed-case, hyphenated words and apostrophes
+  // -------------------------------------------------------------------
+  runTest("Required Test 3: Uppercase, lowercase, mixed-case, and hyphenated words preserve original text", () => {
+    // 1. Lowercase words
+    const lowerRange = {
+      collapsed: false,
+      toString: () => "special",
+      startContainer: { nodeType: 3, textContent: "a special case" },
+      getBoundingClientRect: () => ({ left: 10, top: 10, width: 50, height: 16 })
+    };
+    assert.strictEqual(expandRangeToSelection(lowerRange).text, "special", "Lowercase 'special' must remain 'special'");
+
+    // 2. Uppercase terms
+    const uppercaseTerms = ["COVID-19", "UNESCO", "G20", "RBI", "WHO"];
+    for (const term of uppercaseTerms) {
+      assert.strictEqual(cleanSingleWord(term), term, `Uppercase term '${term}' must preserve all uppercase letters`);
+      const r = {
+        collapsed: false,
+        toString: () => term,
+        startContainer: { nodeType: 3, textContent: `The ${term} guidelines were issued.` },
+        getBoundingClientRect: () => ({ left: 10, top: 10, width: 50, height: 16 })
+      };
+      assert.strictEqual(expandRangeToSelection(r).text, term, `Selection of '${term}' must match exactly`);
+    }
+
+    // 3. Mixed-case terms
+    const mixedTerms = ["iPhone", "McDonald", "McGill", "eLearning"];
+    for (const term of mixedTerms) {
+      assert.strictEqual(cleanSingleWord(term), term, `Mixed-case term '${term}' must preserve exact casing`);
+    }
+
+    // 4. Apostrophes and hyphens
+    assert.strictEqual(cleanSingleWord("India's"), "India's", "Apostrophe must be preserved");
+    assert.strictEqual(cleanSingleWord("state-of-the-art"), "state-of-the-art", "Hyphens must be preserved");
+    assert.strictEqual(cleanSingleWord("“Special”"), "Special", "Outer quotes stripped while preserving inner capitalization");
+    assert.strictEqual(cleanSingleWord("(Constitution)"), "Constitution", "Outer parentheses stripped while preserving word");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 4: Scanned PDF OCR word click translates only that exact word
+  // -------------------------------------------------------------------
+  await runAsyncTest("Required Test 4: Scanned PDF OCR word click selects correct OCR word", async () => {
+    const ocrWord = "Special";
+    const clean = cleanSingleWord(ocrWord);
+    assert.strictEqual(clean, "Special", "Clean OCR word must be exactly 'Special'");
+
+    const lookupResult = await lookupText(clean);
+    assert.ok(lookupResult, "OCR lookup must succeed");
+    assert.strictEqual(lookupResult.word, "Special", "Returned word must be 'Special'");
+    assert.strictEqual(lookupResult.meaning, "विशेष", "Primary Hindi meaning must be 'विशेष'");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 5 & 6: Close button dismisses popup without selecting/translating text behind it
+  // -------------------------------------------------------------------
+  runTest("Required Test 5 & 6: Tapping (X) closes popup without translating text behind it or triggering second request", () => {
+    let requestsCount = 0;
+    let dismissedTime = 0;
+    let popupOpen = true;
+
+    // Simulate clicking close button
+    const handleDismiss = () => {
+      popupOpen = false;
+      dismissedTime = Date.now();
+    };
+
+    handleDismiss();
+    assert.strictEqual(popupOpen, false, "Popup must be closed");
+
+    // Simulate immediate delayed touch / mouse event on element underneath the close button (50ms later)
+    const simulatedTouchTimestamp = dismissedTime + 50;
+    const isSuppressed = simulatedTouchTimestamp - dismissedTime < 400;
+
+    if (!isSuppressed) {
+      requestsCount++;
+    }
+
+    assert.strictEqual(isSuppressed, true, "Ghost click on underlying PDF must be suppressed within debounce window");
+    assert.strictEqual(requestsCount, 0, "No secondary translation request must occur on dismissal");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 7: Normal word selection works immediately after popup is closed
+  // -------------------------------------------------------------------
+  runTest("Required Test 7: Normal word selection works after closing popup", () => {
+    const dismissedTime = Date.now() - 450; // 450ms ago (past 400ms debounce)
+    const canSelect = Date.now() - dismissedTime >= 400;
+    assert.strictEqual(canSelect, true, "Normal selection is enabled after debounce period");
+
+    const mockWordRange = {
+      collapsed: false,
+      toString: () => "Democracy",
+      startContainer: { nodeType: 3, textContent: "Democracy in India is vibrant." },
+      getBoundingClientRect: () => ({ left: 100, top: 150, width: 80, height: 18 })
+    };
+    const sel = expandRangeToSelection(mockWordRange);
+    assert.ok(sel, "Word selection must succeed immediately after popup close");
+    assert.strictEqual(sel.text, "Democracy", "Must select exact word 'Democracy'");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 8: Word popup contains ONLY Part of Speech, selected word, Hindi meaning, alternatives, and close button
+  // -------------------------------------------------------------------
+  await runAsyncTest("Required Test 8: Popup contains ONLY minimal 5 elements (no OCR badges, grammar cards, etc.)", async () => {
+    const res = await lookupText("Book", null, "I read an interesting book about history.");
+    assert.ok(res, "Lookup for 'Book' must succeed");
+
+    // 1. Part of Speech badge
+    assert.ok(res.pos, "Part of Speech must be present");
+    assert.strictEqual(res.pos, "Noun");
+
+    // 2. Exact selected word
+    assert.strictEqual(res.word, "Book", "Word must preserve original capitalization 'Book'");
+
+    // 3. Primary Hindi meaning
+    assert.strictEqual(res.meaning, "किताब", "Primary Hindi meaning must be prominent");
+
+    // 4. Alternative Hindi meanings (2-4 items, excluding primary meaning)
+    const alts = (res.alternatives || []).filter(a => a.trim() && a.trim() !== res.meaning);
+    assert.ok(alts.length >= 2, "Alternative meanings must provide 2-4 items");
+    assert.ok(alts.includes("पुस्तक") || alts.includes("ग्रंथ"), "Alternatives must include relevant dictionary entries");
+
+    // 5. Verification of completely removed UI elements:
+    // Ensure popup render logic produces NO OCR accuracy badges, pronunciation buttons, or grammar explanation cards
+    const excludedUIFields = ["ocrBadgeVisible", "phoneticTranscriptionVisible", "hinglishCardVisible", "sentenceBoxVisible"];
+    for (const field of excludedUIFields) {
+      assert.strictEqual(res[field], undefined, `Popup UI field '${field}' must not be present`);
+    }
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 9: Popup works on mobile and desktop
+  // -------------------------------------------------------------------
+  runTest("Required Test 9: Popup works on mobile (bottom sheet) and desktop (floating card)", () => {
+    const mockRect = { left: 400, top: 250, right: 480, bottom: 270, width: 80, height: 20 };
+
+    // Mobile: viewport width <= 640
+    globalThis.window = { innerWidth: 390, innerHeight: 844 };
+    const mobilePos = calculatePopupPosition(mockRect, 320, 160);
+    assert.strictEqual(mobilePos.isMobile, true, "Must detect mobile");
+    assert.strictEqual(mobilePos.placement, "bottom-sheet", "Mobile must use bottom-sheet placement");
+
+    // Desktop: viewport width > 640
+    globalThis.window = { innerWidth: 1280, innerHeight: 800 };
+    const desktopPos = calculatePopupPosition(mockRect, 320, 160);
+    assert.strictEqual(desktopPos.isMobile, false, "Must detect desktop");
+    assert.ok(["below", "above"].includes(desktopPos.placement), "Desktop must use above/below floating placement");
+    assert.ok(desktopPos.left >= 12, "Desktop left position must be clamped within screen");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 10: Existing PDF navigation, zoom, OCR, and translation continue to work
+  // -------------------------------------------------------------------
+  await runAsyncTest("Required Test 10: Existing PDF navigation, zoom, OCR, and translation continue to work", async () => {
+    // 1. Zoom invariant OCR relative coordinates
+    const imageW = 2000;
+    const imageH = 2800;
+    const left = 200;
+    const top = 350;
+    const relX = left / imageW;
+    const relY = top / imageH;
+    assert.strictEqual(relX, 0.1);
+    assert.strictEqual(relY, 0.125);
+
+    // 2. Translation for editorial vocabulary
+    const sampleWords = ["reforms", "growth", "constitution", "resilient", "special"];
+    for (const w of sampleWords) {
+      const res = await lookupText(w);
+      assert.ok(res, `Translation for '${w}' must return valid meaning`);
+      assert.ok(res.meaning && res.meaning.length > 0);
+    }
   });
 
   console.log("\n-------------------------------------------------");

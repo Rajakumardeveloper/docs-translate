@@ -539,9 +539,16 @@ export const BUILTIN_DICTIONARY = {
   book: {
     word: "book",
     ipa: "/bʊk/",
-    meaning: "किताब / आरक्षित करना",
-    alternatives: ["किताब", "पुस्तक", "आरक्षित करना", "बुक करना"],
+    meaning: "किताब",
+    alternatives: ["किताब", "पुस्तक", "ग्रंथ", "आरक्षित करना"],
     sentence: "He bought a new book on Indian history. — उसने भारतीय इतिहास पर एक नई किताब खरीदी।"
+  },
+  special: {
+    word: "special",
+    ipa: "/ˈspeʃ.əl/",
+    meaning: "विशेष",
+    alternatives: ["विशेष", "ख़ास", "विशिष्ट", "असाधारण"],
+    sentence: "The committee submitted a special report on legal reforms. — समिति ने कानूनी सुधारों पर एक विशेष रिपोर्ट प्रस्तुत की।"
   },
   light: {
     word: "light",

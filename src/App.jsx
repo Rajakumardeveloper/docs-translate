@@ -30,6 +30,7 @@ import {
   cleanSingleWord,
   normalizeSelectionText,
   expandRangeToSelection,
+  extractWordAtPoint,
   calculatePopupPosition
 } from "./selection.js";
 
@@ -73,9 +74,7 @@ export default function App() {
   const [entry, setEntry] = useState(null);
   const [popupPos, setPopupPos] = useState({ left: 20, top: 120, arrowX: 40, placement: "below" });
   const [activeWordRect, setActiveWordRect] = useState(null);
-  const [altIndex, setAltIndex] = useState(0);
   const [busy, setBusy] = useState(false);
-  const [isSpeaking, setIsSpeaking] = useState(false);
 
   // Search state
   const [showSearch, setShowSearch] = useState(false);
@@ -114,6 +113,9 @@ export default function App() {
   // States: 'idle' | 'selecting' | 'translating' | 'showing-result' | 'dismissed'
   const [interactionState, setInteractionState] = useState("idle");
   const dismissedSignatureRef = useRef(null);
+  const justDismissedTimeRef = useRef(0);
+  const touchInsidePopupRef = useRef(false);
+  const touchEndTimerRef = useRef(null);
 
   // Background OCR Pipeline Refs (Phase 3 & 4)
   const activeOcrPageRef = useRef(null);
@@ -148,6 +150,13 @@ export default function App() {
   // Explicit dismissal handler for (X) button: marks selection dismissed so it does not immediately reopen
   const handleDismiss = useCallback((e) => {
     e?.stopPropagation?.();
+    e?.preventDefault?.();
+    justDismissedTimeRef.current = Date.now();
+    touchInsidePopupRef.current = true;
+    if (touchEndTimerRef.current) {
+      clearTimeout(touchEndTimerRef.current);
+      touchEndTimerRef.current = null;
+    }
     if (entry) {
       const textSig = (entry.text || entry.word || "").trim().toLowerCase();
       const rectSig = activeWordRect ? `${Math.round(activeWordRect.left)},${Math.round(activeWordRect.top)}` : "";
@@ -266,10 +275,9 @@ export default function App() {
     const signal = abortControllerRef.current.signal;
 
     setActiveWordRect(rect);
-    const pos = calculatePopupPosition(rect, 360, 260);
+    const pos = calculatePopupPosition(rect, 320, 160);
     setPopupPos(pos);
 
-    setAltIndex(0);
     const isMultiWord = words.length > 1;
     const initialType = isMultiWord ? (type === "sentence" ? "sentence" : "phrase") : "word";
 
@@ -293,7 +301,7 @@ export default function App() {
           setEntry({ ...res, ocrConfidence, isError: false });
           setInteractionState("showing-result");
           if (rect) {
-            setPopupPos(calculatePopupPosition(rect, 360, 260));
+            setPopupPos(calculatePopupPosition(rect, 320, 160));
           }
         }
       }
@@ -336,7 +344,7 @@ export default function App() {
   useEffect(() => {
     const handleScrollOrResize = () => {
       if (entry && activeWordRect) {
-        setPopupPos(calculatePopupPosition(activeWordRect, 360, 260));
+        setPopupPos(calculatePopupPosition(activeWordRect, 320, 160));
       }
     };
     const area = readerAreaRef.current;
@@ -571,7 +579,12 @@ export default function App() {
   const processSelectionOrClick = useCallback(
     (e) => {
       // If clicking inside the popup, let popup buttons handle their events
-      if (popupRef.current && popupRef.current.contains(e.target)) return;
+      if (popupRef.current && e?.target && popupRef.current.contains(e.target)) return;
+
+      // Prevent accidental ghost selection immediately after dismissal
+      if (Date.now() - justDismissedTimeRef.current < 400) {
+        return;
+      }
 
       // 1. Check if user made an active text selection across PDF text spans or OCR overlays
       const sel = window.getSelection();
@@ -657,7 +670,29 @@ export default function App() {
         }
       }
 
-      // 3. Otherwise: User clicked blank space, background, or collapsed selection
+      // 3. For text-based PDFs: check if user clicked on a word in the PDF text layer
+      const clientX = typeof e.clientX === "number" ? e.clientX : 0;
+      const clientY = typeof e.clientY === "number" ? e.clientY : 0;
+      const targetEl = e.target || (typeof document !== "undefined" && clientX && clientY ? document.elementFromPoint(clientX, clientY) : null);
+      const textSpan = targetEl?.closest?.(".textLayer span");
+      if (textSpan && clientX && clientY) {
+        const foundWord = extractWordAtPoint(clientX, clientY, textSpan);
+        if (foundWord && foundWord.text && foundWord.text.trim()) {
+          const rect = foundWord.rect;
+          const textSig = foundWord.text.trim().toLowerCase();
+          const rectSig = rect ? `${Math.round(rect.left)},${Math.round(rect.top)}` : "";
+          const currentSig = `${textSig}@${rectSig}`;
+
+          if (dismissedSignatureRef.current === currentSig && interactionState === "dismissed") {
+            return;
+          }
+
+          openMeaning(foundWord);
+          return;
+        }
+      }
+
+      // 4. Otherwise: User clicked blank space, background, or collapsed non-text selection
       // Dismiss active popup safely, transition to idle, clear dismissed signature
       if (entry) {
         closePopup();
@@ -665,18 +700,39 @@ export default function App() {
       setInteractionState("idle");
       dismissedSignatureRef.current = null;
     },
-    [entry, interactionState, openMeaning, closePopup]
+    [entry, interactionState, openMeaning, closePopup, ocrWords]
   );
 
   useEffect(() => {
     const onTouchStart = (e) => {
+      if (popupRef.current && e.target && popupRef.current.contains(e.target)) {
+        touchInsidePopupRef.current = true;
+        return;
+      }
+      touchInsidePopupRef.current = false;
       if (e.touches && e.touches[0]) {
         touchStartPos.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
       }
     };
 
-    const onMouseUp = (e) => processSelectionOrClick(e);
+    const onMouseUp = (e) => {
+      if (popupRef.current && e.target && popupRef.current.contains(e.target)) {
+        return;
+      }
+      if (Date.now() - justDismissedTimeRef.current < 400) {
+        return;
+      }
+      processSelectionOrClick(e);
+    };
+
     const onTouchEnd = (e) => {
+      if (touchInsidePopupRef.current) {
+        touchInsidePopupRef.current = false;
+        return;
+      }
+      if (Date.now() - justDismissedTimeRef.current < 400) {
+        return;
+      }
       if (e.changedTouches && e.changedTouches[0]) {
         const touch = e.changedTouches[0];
         const dx = Math.abs(touch.clientX - touchStartPos.current.x);
@@ -685,13 +741,35 @@ export default function App() {
         if (dx > 10 || dy > 10) {
           return;
         }
-        setTimeout(() => {
+
+        // Before running, check if touch was inside popup
+        if (popupRef.current) {
+          const rect = popupRef.current.getBoundingClientRect();
+          if (
+            touch.clientX >= rect.left &&
+            touch.clientX <= rect.right &&
+            touch.clientY >= rect.top &&
+            touch.clientY <= rect.bottom
+          ) {
+            return;
+          }
+        }
+
+        if (touchEndTimerRef.current) {
+          clearTimeout(touchEndTimerRef.current);
+        }
+        touchEndTimerRef.current = setTimeout(() => {
+          touchEndTimerRef.current = null;
+          if (Date.now() - justDismissedTimeRef.current < 400) {
+            return;
+          }
+          const targetEl = document.elementFromPoint(touch.clientX, touch.clientY);
           processSelectionOrClick({
             clientX: touch.clientX,
             clientY: touch.clientY,
-            target: document.elementFromPoint(touch.clientX, touch.clientY)
+            target: targetEl
           });
-        }, 130);
+        }, 120);
       }
     };
 
@@ -702,33 +780,11 @@ export default function App() {
       document.removeEventListener("touchstart", onTouchStart);
       document.removeEventListener("mouseup", onMouseUp);
       document.removeEventListener("touchend", onTouchEnd);
+      if (touchEndTimerRef.current) {
+        clearTimeout(touchEndTimerRef.current);
+      }
     };
   }, [processSelectionOrClick]);
-
-  // Audio pronunciation of word, phrase, or sentence
-  const speakText = () => {
-    const targetText = entry?.text || entry?.word;
-    if (!targetText || !("speechSynthesis" in window)) return;
-    window.speechSynthesis.cancel();
-    const utter = new SpeechSynthesisUtterance(targetText);
-    utter.lang = "en-US";
-    utter.rate = 0.9;
-    const voices = window.speechSynthesis.getVoices();
-    const enVoice = voices.find((v) => v.lang.startsWith("en"));
-    if (enVoice) utter.voice = enVoice;
-
-    utter.onstart = () => setIsSpeaking(true);
-    utter.onend = () => setIsSpeaking(false);
-    utter.onerror = () => setIsSpeaking(false);
-    window.speechSynthesis.speak(utter);
-  };
-
-  // Alternative meanings cycle
-  const changeAlt = (dir) => {
-    if (!entry?.alternatives?.length) return;
-    const total = entry.alternatives.length;
-    setAltIndex((prev) => (prev + dir + total) % total);
-  };
 
   // Safe page navigation (ensures any open popups or pending requests close)
   const goToPage = (p) => {
@@ -1226,7 +1282,7 @@ export default function App() {
         )}
       </main>
 
-      {/* Floating English-to-Hindi Vocabulary Teacher Card & Translation Popup (or Mobile Bottom Sheet) */}
+      {/* Extremely Minimal English-to-Hindi Meaning Popup (or Mobile Bottom Sheet) */}
       {entry && (
         <div
           ref={popupRef}
@@ -1235,184 +1291,107 @@ export default function App() {
             position: "fixed",
             left: `${popupPos.left}px`,
             top: `${popupPos.top}px`,
-            "--arrow-x": `${popupPos.arrowX}px`
+            "--arrow-x": `${popupPos.arrowX}px`,
+            pointerEvents: "auto",
+            zIndex: 1000
           }}
+          onMouseDown={(e) => e.stopPropagation()}
+          onMouseUp={(e) => e.stopPropagation()}
+          onTouchStart={(e) => {
+            touchInsidePopupRef.current = true;
+            e.stopPropagation();
+          }}
+          onTouchEnd={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
           role="dialog"
-          aria-label={`Vocabulary Teacher: ${entry.text || entry.word}`}
+          aria-label={`Meaning: ${entry.text || entry.word}`}
         >
-          {/* Mobile Bottom Sheet Drag Handle */}
-          <div className="sheet-handle" aria-hidden="true" />
-
-          {/* Header */}
-          <div className="popup-head">
-            <button
-              className={`sound-btn ${isSpeaking ? "speaking" : ""}`}
-              onClick={speakText}
-              aria-label="Listen to English pronunciation"
-              title="Pronounce Selection"
-            >
-              <Volume2 size={20} />
-            </button>
-
-            <div className="word-block">
-              <div className="badge-row">
-                {entry.pos && (
-                  <span className={`pos-pill pos-${(entry.pos || "").toLowerCase()}`} title={entry.posHindi || entry.pos}>
-                    {entry.posHindi || entry.pos}
-                  </span>
-                )}
-                {entry.type && entry.type !== "word" && (
-                  <span className="type-badge">
-                    {entry.type === "sentence" ? "Sentence" : "Phrase"}
-                  </span>
-                )}
-                {entry.ocrConfidence !== undefined && (
-                  <span className={`conf-badge ${entry.ocrConfidence < 45 ? "low" : "ok"}`}>
-                    OCR {entry.ocrConfidence}%
-                  </span>
-                )}
-              </div>
-              <div className="word-title-row">
-                <strong>{entry.text || entry.word}</strong>
-                {entry.phonetic && entry.phonetic !== (entry.text || entry.word) && (
-                  <span className="phonetic-guide" title="Readable pronunciation">"{entry.phonetic}"</span>
-                )}
-              </div>
-              {entry.ipa ? <small className="ipa-text">{entry.ipa}</small> : null}
-            </div>
+          {/* Top Row: Part of Speech Badge (Left) & Functional Close Button (Right) */}
+          <div className="popup-top-row">
+            {entry.pos && entry.pos !== "Uncertain" ? (
+              <span className={`pos-badge pos-${entry.pos.toLowerCase()}`}>
+                {entry.pos}
+              </span>
+            ) : (
+              <span className="pos-badge pos-default">
+                {entry.type === "phrase" ? "Phrase" : (entry.type === "sentence" ? "Sentence" : "Word")}
+              </span>
+            )}
 
             <button
               className="close-btn"
+              type="button"
               onClick={handleDismiss}
-              aria-label="Close Dialog"
-              title="Close (X)"
+              onPointerDown={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+              }}
+              onTouchStart={(e) => {
+                touchInsidePopupRef.current = true;
+                e.stopPropagation();
+              }}
+              onTouchEnd={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                handleDismiss(e);
+              }}
+              onMouseDown={(e) => e.stopPropagation()}
+              aria-label="Close"
+              title="Close (✕)"
             >
               <X size={18} />
             </button>
           </div>
 
-          {/* Low OCR Confidence Warning Banner */}
-          {entry.ocrConfidence !== undefined && entry.ocrConfidence < 45 && (
-            <div className="ocr-low-alert" role="alert">
-              <AlertCircle size={15} />
-              <span>OCR सटीकता कम है ({entry.ocrConfidence}%)। यदि शब्द सही नहीं है, तो कृपया दोबारा चुनें।</span>
-            </div>
-          )}
+          {/* Exact selected word with original capitalization */}
+          <div className="popup-word">
+            {entry.text || entry.word}
+          </div>
 
-          {/* Main Meaning / Translation or Error with Retry */}
+          {/* Primary Hindi meaning prominently displayed */}
           {entry.isError ? (
             <div className="error-retry-box">
               <p className="error-message">{entry.meaning}</p>
               <button
                 className="retry-btn"
+                type="button"
                 onClick={retryTranslation}
                 aria-label="Retry Translation"
               >
-                <RotateCcw size={15} /> पुनः प्रयास करें (Retry)
+                <RotateCcw size={14} /> पुनः प्रयास करें (Retry)
               </button>
             </div>
           ) : (
-            <div className="main-meaning">
-              {entry.alternatives?.[altIndex] || entry.meaning}
+            <div className="popup-primary-meaning">
+              {entry.meaning}
             </div>
           )}
 
-          {/* In-Context Meaning Distinction */}
-          {entry.contextDistinction && !entry.isError && (
-            <div className="context-distinction">
-              <span className="distinction-icon">📌</span>
-              <span>{entry.contextDistinction}</span>
-            </div>
-          )}
+          {/* Alternative Hindi meanings: 2-4 relevant alternatives when available */}
+          {(() => {
+            const rawAlts = Array.isArray(entry.alternatives) ? entry.alternatives : [];
+            const primaryClean = (entry.meaning || "").trim().toLowerCase();
+            const filteredAlts = rawAlts.filter(
+              (alt) => alt && alt.trim() && alt.trim().toLowerCase() !== primaryClean
+            );
+            const displayAlts = filteredAlts.slice(0, 4);
 
-          {/* Original Sentence from PDF with Target Word Highlighted */}
-          {entry.sentence && !entry.isError && (
-            <div className="pdf-sentence-box">
-              <div className="sentence-tag">📄 PDF Sentence:</div>
-              <p className="sentence-text">
-                {highlightTargetWord(entry.sentence, entry.text || entry.word)}
-              </p>
-            </div>
-          )}
-
-          {/* Vocabulary Teacher Insights (Grammar Role, Hinglish, Example) */}
-          {!entry.isError && (entry.grammarExplanation || entry.hinglishExplanation || entry.exampleSentence) && (
-            <div className="teacher-card">
-              {entry.grammarExplanation && (
-                <div className="teacher-section grammar-section">
-                  <div className="section-title">💡 व्याकरण भूमिका (Grammar Role)</div>
-                  <p className="section-body">{entry.grammarExplanation}</p>
+            if (displayAlts.length > 0 && !entry.isError) {
+              return (
+                <div className="popup-alternatives">
+                  <span className="alts-label">अन्य अर्थ:</span>{" "}
+                  <span className="alts-list">{displayAlts.join(" · ")}</span>
                 </div>
-              )}
+              );
+            }
+            return null;
+          })()}
 
-              {entry.hinglishExplanation && (
-                <div className="teacher-section hinglish-section">
-                  <div className="section-title">🇮🇳 Hinglish Explanation</div>
-                  <p className="section-body">{entry.hinglishExplanation}</p>
-                </div>
-              )}
-
-              {entry.exampleSentence && (
-                <div className="teacher-section example-section">
-                  <div className="section-title">📝 उदाहरण (Example)</div>
-                  <p className="example-en">"{entry.exampleSentence}"</p>
-                  {entry.exampleHindi && <p className="example-hi">↳ {entry.exampleHindi}</p>}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* English definition if available */}
-          {entry.definition && !entry.isError && <p className="definition">{entry.definition}</p>}
-
-          {/* Alternative Meanings Pills (only when multiple alternatives exist) */}
-          {entry.alternatives && entry.alternatives.length > 1 && !entry.isError && (
-            <div className="alt-section">
-              <div className="other-label">Other meanings:</div>
-              <div className="alternatives">
-                {entry.alternatives.map((alt, i) => (
-                  <button
-                    key={`${alt}-${i}`}
-                    className={`alt-pill ${i === altIndex ? "active" : ""}`}
-                    onClick={() => setAltIndex(i)}
-                    title={`Select “${alt}”`}
-                  >
-                    <span className="dot">•</span>
-                    {alt}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Footer with arrows & position indicator if multiple alternatives exist */}
-          {entry.alternatives && entry.alternatives.length > 1 && !entry.isError && (
-            <div className="popup-footer">
-              <button
-                onClick={() => changeAlt(-1)}
-                aria-label="Previous alternative meaning"
-                title="Previous Meaning"
-              >
-                <ChevronLeft size={18} />
-              </button>
-
-              <span className="meaning-counter">
-                {Math.min(altIndex + 1, entry.alternatives.length)} / {entry.alternatives.length}
-              </span>
-
-              <button
-                onClick={() => changeAlt(1)}
-                aria-label="Next alternative meaning"
-                title="Next Meaning"
-              >
-                <ChevronRight size={18} />
-              </button>
-            </div>
-          )}
-
+          {/* Minimal status indicator if translation is in progress */}
           {busy && (
-            <div className="lookup-note">
-              {entry.type === "word" ? "विश्लेषण जारी है…" : "अनुवाद कर रहे हैं…"}
+            <div className="popup-loading-bar">
+              खोज रहे हैं…
             </div>
           )}
         </div>
