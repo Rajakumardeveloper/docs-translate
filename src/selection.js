@@ -383,6 +383,10 @@ export function expandRangeToSelection(range) {
     }
   }
 
+  const isTextNode = range.startContainer?.nodeType === (typeof Node !== "undefined" ? Node.TEXT_NODE : 3);
+  const startSpan = isTextNode ? range.startContainer.parentElement : range.startContainer;
+  const regionInfo = classifyTextRegion(startSpan);
+
   // CASE 1: MULTI-WORD PHRASE OR SENTENCE (e.g. "economic growth in India", "Constitution of India")
   if (words.length > 1) {
     const isSentence = /[.?!]$/.test(normalized) || words.length >= 6;
@@ -391,7 +395,10 @@ export function expandRangeToSelection(range) {
       text: normalized,
       wordCount: words.length,
       rect,
-      sentence: sentence || normalized
+      sentence: sentence || normalized,
+      region: regionInfo.region,
+      fontSize: regionInfo.fontSize,
+      isBold: regionInfo.isBold
     };
   }
 
@@ -400,9 +407,6 @@ export function expandRangeToSelection(range) {
   if (singleClean && singleClean.length >= 1 && /[A-Za-z]/.test(singleClean)) {
     // Check if initial capital letter or word continuation was split across PDF textLayer spans
     try {
-      const isTextNode = range.startContainer?.nodeType === (typeof Node !== "undefined" ? Node.TEXT_NODE : 3);
-      const startSpan = isTextNode ? range.startContainer.parentElement : range.startContainer;
-
       if (startSpan?.closest?.(".textLayer")) {
         const textInSpan = startSpan.textContent || "";
         const startOff = typeof range.startOffset === "number" ? range.startOffset : 0;
@@ -438,7 +442,10 @@ export function expandRangeToSelection(range) {
       text: singleClean,
       wordCount: 1,
       rect,
-      sentence: sentence || ""
+      sentence: sentence || "",
+      region: regionInfo.region,
+      fontSize: regionInfo.fontSize,
+      isBold: regionInfo.isBold
     };
   }
 

@@ -136,6 +136,10 @@ export default function App() {
     if (pendingScrollRef.current && readerAreaRef.current) {
       const { left, top } = pendingScrollRef.current;
       pendingScrollRef.current = null;
+      if (readerAreaRef.current) {
+        readerAreaRef.current.scrollLeft = left;
+        readerAreaRef.current.scrollTop = top;
+      }
       requestAnimationFrame(() => {
         if (readerAreaRef.current) {
           readerAreaRef.current.scrollLeft = left;
@@ -144,6 +148,21 @@ export default function App() {
       });
     }
   }, [scale]);
+
+  // Non-passive native touchmove listener for two-finger pinch zoom
+  useEffect(() => {
+    const el = readerAreaRef.current;
+    if (!el) return;
+    const onTouchMoveNative = (e) => {
+      if (e.touches && e.touches.length === 2) {
+        handleReaderTouchMove(e);
+      }
+    };
+    el.addEventListener("touchmove", onTouchMoveNative, { passive: false });
+    return () => {
+      el.removeEventListener("touchmove", onTouchMoveNative);
+    };
+  }, []);
 
   // Background OCR Pipeline Refs (Phase 3 & 4)
   const activeOcrPageRef = useRef(null);
@@ -744,7 +763,8 @@ export default function App() {
         const idx = idxStr !== null ? parseInt(idxStr, 10) : -1;
         const ocrConfidence = confStr !== null ? parseInt(confStr, 10) : 100;
 
-        if (clean && clean.length >= 2) {
+        const isSingleValid = ["a", "i", "A", "I"].includes(clean);
+        if (clean && (clean.length >= 2 || isSingleValid)) {
           const rect = ocrSpan.getBoundingClientRect();
           const currentSig = `${clean.toLowerCase()}@${Math.round(rect.left)},${Math.round(rect.top)}`;
           if (dismissedSignatureRef.current === currentSig && interactionState === "dismissed") {
@@ -977,8 +997,13 @@ export default function App() {
       }
 
       pinchDistRef.current = null;
-      if (Math.abs(finalScale - scale) > 0.02) {
+      if (Math.abs(finalScale - scale) > 0.01) {
         setScale(finalScale);
+      } else if (reader && pendingScrollRef.current) {
+        const { left, top } = pendingScrollRef.current;
+        pendingScrollRef.current = null;
+        reader.scrollLeft = left;
+        reader.scrollTop = top;
       }
     }
   };
