@@ -289,12 +289,28 @@ export default function App() {
       if (sel && !sel.isCollapsed && sel.rangeCount > 0) {
         const range = sel.getRangeAt(0);
         const container =
-          range.commonAncestorContainer?.nodeType === Node.ELEMENT_NODE
+          range.commonAncestorContainer?.nodeType === (typeof Node !== "undefined" ? Node.ELEMENT_NODE : 1)
             ? range.commonAncestorContainer
             : range.commonAncestorContainer?.parentElement;
 
-        const isInsideTextLayer = container?.closest?.(".textLayer");
-        const isInsideOcr = container?.closest?.(".ocr-overlay");
+        const startEl =
+          range.startContainer?.nodeType === (typeof Node !== "undefined" ? Node.ELEMENT_NODE : 1)
+            ? range.startContainer
+            : range.startContainer?.parentElement;
+        const endEl =
+          range.endContainer?.nodeType === (typeof Node !== "undefined" ? Node.ELEMENT_NODE : 1)
+            ? range.endContainer
+            : range.endContainer?.parentElement;
+
+        const isInsideTextLayer =
+          container?.closest?.(".textLayer") ||
+          startEl?.closest?.(".textLayer") ||
+          endEl?.closest?.(".textLayer");
+
+        const isInsideOcr =
+          container?.closest?.(".ocr-overlay") ||
+          startEl?.closest?.(".ocr-overlay") ||
+          endEl?.closest?.(".ocr-overlay");
 
         if (isInsideTextLayer || isInsideOcr) {
           const found = expandRangeToSelection(range);
@@ -419,6 +435,15 @@ export default function App() {
       try {
         window.getSelection()?.removeAllRanges();
       } catch {}
+
+      // Reset OCR cache, active words, and search state so second PDF has no stale data
+      ocrCache.current.clear();
+      setOcrWords([]);
+      setIsScannedPage(false);
+      setSearchResults([]);
+      setSearchNotice("");
+      setPage(1);
+      setPageJumpInput("1");
 
       try {
         const buffer = await f.arrayBuffer();
@@ -546,26 +571,6 @@ export default function App() {
     setSearchNotice(`परिणाम ${prevIdx + 1} / ${searchResults.length}`);
   };
 
-  // Custom text renderer to highlight search query on the PDF page
-  const customTextRenderer = useCallback(
-    ({ str }) => {
-      const q = query.trim();
-      if (!q) return str;
-      const parts = str.split(new RegExp(`(${escapeRegex(q)})`, "gi"));
-      if (parts.length === 1) return str;
-      return parts.map((part, i) =>
-        part.toLowerCase() === q.toLowerCase() ? (
-          <mark key={i} className="search-highlight">
-            {part}
-          </mark>
-        ) : (
-          part
-        )
-      );
-    },
-    [query]
-  );
-
   // Advanced OCR for scanned & image-based newspaper pages
   const runOCR = async () => {
     if (!pdfCanvas.current) {
@@ -595,6 +600,8 @@ export default function App() {
 
       // Preprocess image for difficult/low-contrast newsprint: apply contrast & grayscale
       const srcCanvas = pdfCanvas.current;
+      const imageW = srcCanvas.width || 1;
+      const imageH = srcCanvas.height || 1;
       const offscreen = document.createElement("canvas");
       offscreen.width = srcCanvas.width;
       offscreen.height = srcCanvas.height;
@@ -614,14 +621,18 @@ export default function App() {
               for (const w of line.words || []) {
                 const clean = cleanSingleWord(w.text);
                 if (clean && clean.length >= 2 && w.bbox) {
+                  const left = w.bbox.x0;
+                  const top = w.bbox.y0;
+                  const right = w.bbox.x1;
+                  const bottom = w.bbox.y1;
                   words.push({
                     text: w.text.trim(),
                     clean,
-                    bbox: {
-                      x0: w.bbox.x0,
-                      y0: w.bbox.y0,
-                      x1: w.bbox.x1,
-                      y1: w.bbox.y1
+                    relBox: {
+                      x0: left / imageW,
+                      y0: top / imageH,
+                      x1: right / imageW,
+                      y1: bottom / imageH
                     },
                     confidence: w.confidence
                   });
@@ -646,11 +657,11 @@ export default function App() {
               words.push({
                 text: rawText,
                 clean,
-                bbox: {
-                  x0: left,
-                  y0: top,
-                  x1: left + width,
-                  y1: top + height
+                relBox: {
+                  x0: left / imageW,
+                  y0: top / imageH,
+                  x1: (left + width) / imageW,
+                  y1: (top + height) / imageH
                 },
                 confidence: conf
               });
@@ -659,7 +670,7 @@ export default function App() {
         }
       }
 
-      console.log(`OCR detected ${words.length} words with bounding boxes.`);
+      console.log(`OCR detected ${words.length} words with relative bounding boxes.`);
 
       ocrCache.current.set(page, words);
       setOcrWords(words);
@@ -678,18 +689,6 @@ export default function App() {
       setOcrProgress(0);
     }
   };
-
-  // Compute OCR overlay scale relative to canvas display size
-  const ocrScale = useMemo(() => {
-    if (!pdfCanvas.current) return { x: 1, y: 1 };
-    const cvs = pdfCanvas.current;
-    const clientW = cvs.clientWidth || cvs.width || 1;
-    const clientH = cvs.clientHeight || cvs.height || 1;
-    return {
-      x: clientW / (cvs.width || clientW),
-      y: clientH / (cvs.height || clientH)
-    };
-  }, [ocrWords, scale, page]);
 
   return (
     <div className="app-shell">
@@ -947,7 +946,6 @@ export default function App() {
                   renderTextLayer={true}
                   renderAnnotationLayer={true}
                   canvasRef={pdfCanvas}
-                  customTextRenderer={customTextRenderer}
                   onRenderTextLayerSuccess={onTextLayerRenderSuccess}
                   loading={
                     <div className="page-loading-state">
@@ -961,10 +959,10 @@ export default function App() {
                 {ocrWords.length > 0 && showOcrBoxes && (
                   <div className="ocr-overlay" aria-label="Interactive OCR selectable words">
                     {ocrWords.map((item, idx) => {
-                      const left = item.bbox.x0 * ocrScale.x;
-                      const top = item.bbox.y0 * ocrScale.y;
-                      const width = (item.bbox.x1 - item.bbox.x0) * ocrScale.x;
-                      const height = (item.bbox.y1 - item.bbox.y0) * ocrScale.y;
+                      const leftPct = (item.relBox.x0 * 100).toFixed(3);
+                      const topPct = (item.relBox.y0 * 100).toFixed(3);
+                      const widthPct = Math.max(0.1, (item.relBox.x1 - item.relBox.x0) * 100).toFixed(3);
+                      const heightPct = Math.max(0.1, (item.relBox.y1 - item.relBox.y0) * 100).toFixed(3);
 
                       return (
                         <span
@@ -973,11 +971,10 @@ export default function App() {
                             entry?.text?.toLowerCase() === item.clean.toLowerCase() ? "active" : ""
                           }`}
                           style={{
-                            left: `${left}px`,
-                            top: `${top}px`,
-                            width: `${Math.max(12, width)}px`,
-                            height: `${Math.max(10, height)}px`,
-                            fontSize: `${Math.max(10, height * 0.82)}px`
+                            left: `${leftPct}%`,
+                            top: `${topPct}%`,
+                            width: `${widthPct}%`,
+                            height: `${heightPct}%`
                           }}
                           data-word={item.clean}
                           title={`“${item.clean}” — Click for meaning or drag across words to translate phrase`}

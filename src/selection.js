@@ -7,8 +7,8 @@ export function cleanSingleWord(raw) {
   let w = raw.trim();
   // Strip leading & trailing quotes, brackets, punctuations
   w = w.replace(/^[“"‘'(\[{<«»\s,.:;!?-]+|[”"’')\]}>«»\s,.:;!?-]+$/g, "");
-  // Keep valid English word characters
-  w = w.replace(/[^A-Za-z'-]/g, "");
+  // Keep valid English word characters and digits
+  w = w.replace(/[^A-Za-z0-9'-]/g, "");
   return w;
 }
 

@@ -546,7 +546,7 @@ html, body {
   border: 1px solid #d5e1f0;
   position: relative;
   display: inline-block;
-  line-height: 0;
+  line-height: normal;
 }
 
 .react-pdf__Page {
@@ -556,31 +556,37 @@ html, body {
 
 .react-pdf__Page canvas {
   display: block;
-  max-width: 100%;
-  height: auto !important;
+  user-select: none;
 }
 
-/* Text Layer Styling & Real Text Selection */
+/* Text Layer Styling & Exact Glyph Alignment */
 .react-pdf__Page__textContent {
   user-select: text !important;
   -webkit-user-select: text !important;
-  line-height: 1 !important;
 }
 
 .textLayer {
   position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  text-align: initial;
+  inset: 0;
   overflow: hidden;
-  opacity: 1;
+  line-height: 1;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  z-index: 3 !important;
   pointer-events: auto !important;
+  user-select: text !important;
+  -webkit-user-select: text !important;
 }
 
-.textLayer span {
-  cursor: text;
+.textLayer :is(span, br) {
   color: transparent !important;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  margin: 0;
+  transform-origin: 0 0;
   pointer-events: auto !important;
 }
 
@@ -603,11 +609,14 @@ html, body {
 }
 
 .annotationLayer {
+  position: absolute;
+  inset: 0;
+  z-index: 1 !important;
   pointer-events: none !important;
 }
 
 .annotationLayer a, .annotationLayer section {
-  pointer-events: auto !important;
+  pointer-events: none !important;
 }
 
 /* Real In-PDF Search Highlight */

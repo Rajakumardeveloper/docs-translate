@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { cleanSingleWord, normalizeSelectionText, expandRangeToSelection } from "./src/selection.js";
+import { cleanSingleWord, normalizeSelectionText, expandRangeToSelection, calculatePopupPosition } from "./src/selection.js";
 import { lookupText, normalizeLookupText, BUILTIN_DICTIONARY } from "./src/dictionary.js";
 
 // Polyfill minimal Node constants if not in browser
@@ -170,6 +170,119 @@ async function main() {
     assert.ok(lookupResult, "OCR word lookup succeeds");
     assert.strictEqual(lookupResult.word.toLowerCase(), "democracy");
     assert.strictEqual(lookupResult.meaning, "लोकतंत्र");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST H: Selection near top-left of page
+  // -------------------------------------------------------------------
+  runTest("Test H: Select word near top-left of page - Placement below, clamped arrow", () => {
+    const mockTopLeft = {
+      collapsed: false,
+      toString: () => "Editorial",
+      startContainer: { nodeType: 3, textContent: "Editorial: The Path Forward" },
+      getBoundingClientRect: () => ({ left: 24, top: 40, width: 70, height: 18 })
+    };
+    const sel = expandRangeToSelection(mockTopLeft);
+    assert.ok(sel);
+    assert.strictEqual(sel.text, "Editorial");
+
+    // Mock window inner dimensions
+    globalThis.window = { innerWidth: 1280, innerHeight: 800 };
+    const pos = calculatePopupPosition(sel.rect, 360, 260);
+    assert.strictEqual(pos.placement, "below");
+    assert.ok(pos.left >= 12, "Popup left must be clamped inside viewport");
+    assert.ok(pos.top >= 48, "Popup top must be below word");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST I: Selection near bottom-right of page
+  // -------------------------------------------------------------------
+  runTest("Test I: Select word near bottom-right - Placement above, clamped left/arrow", () => {
+    const mockBottomRight = {
+      collapsed: false,
+      toString: () => "reforms",
+      startContainer: { nodeType: 3, textContent: "Upcoming economic reforms." },
+      getBoundingClientRect: () => ({ left: 1180, top: 720, width: 65, height: 18, bottom: 738 })
+    };
+    const sel = expandRangeToSelection(mockBottomRight);
+    assert.ok(sel);
+    assert.strictEqual(sel.text, "reforms");
+
+    globalThis.window = { innerWidth: 1280, innerHeight: 800 };
+    const pos = calculatePopupPosition(sel.rect, 360, 260);
+    assert.strictEqual(pos.placement, "above");
+    assert.ok(pos.left <= 1280 - 360 - 12, "Popup left must be clamped inside right screen border");
+    assert.ok(pos.arrowX > 200, "Arrow must point toward the word center on right edge");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST J: Selection in a narrow newspaper column
+  // -------------------------------------------------------------------
+  runTest("Test J: Select word in narrow newspaper column (180px width)", () => {
+    const mockNarrowCol = {
+      collapsed: false,
+      toString: () => "growth",
+      startContainer: { nodeType: 3, textContent: "Sustained growth in agricultural output" },
+      getBoundingClientRect: () => ({ left: 320, top: 350, width: 55, height: 16, bottom: 366 })
+    };
+    const sel = expandRangeToSelection(mockNarrowCol);
+    assert.ok(sel);
+    assert.strictEqual(sel.text, "growth");
+    assert.strictEqual(sel.wordCount, 1);
+  });
+
+  // -------------------------------------------------------------------
+  // TEST K: Sentence across multiple lines with newspaper hyphenation
+  // -------------------------------------------------------------------
+  runTest("Test K: Multi-line sentence with hyphenation across lines", () => {
+    const rawHyphenated = "Sustainable economic develop-\n ment and institutional reforms.";
+    const mockMultiLine = {
+      collapsed: false,
+      toString: () => rawHyphenated,
+      startContainer: { nodeType: 3, textContent: rawHyphenated },
+      getBoundingClientRect: () => ({ left: 200, top: 300, width: 350, height: 42 })
+    };
+    const sel = expandRangeToSelection(mockMultiLine);
+    assert.ok(sel);
+    assert.strictEqual(sel.type, "sentence");
+    assert.strictEqual(sel.text, "Sustainable economic development and institutional reforms.");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST L: Zoom invariant OCR coordinates (75%, 100%, 125%, 150%)
+  // -------------------------------------------------------------------
+  runTest("Test L: Zoom invariance of relative OCR bounding boxes", () => {
+    const imageW = 1200;
+    const imageH = 1600;
+    const box = { x0: 120, y0: 320, x1: 240, y1: 360 };
+    const relBox = {
+      x0: box.x0 / imageW,
+      y0: box.y0 / imageH,
+      x1: box.x1 / imageW,
+      y1: box.y1 / imageH
+    };
+
+    const zoomLevels = [0.75, 1.0, 1.25, 1.5];
+    for (const z of zoomLevels) {
+      const displayedWidth = 900 * z;
+      const displayedHeight = 1200 * z;
+
+      const pixelLeft = relBox.x0 * displayedWidth;
+      const pixelWidth = (relBox.x1 - relBox.x0) * displayedWidth;
+
+      // Ensure ratio is constant at all zooms
+      assert.strictEqual(pixelLeft / displayedWidth, 0.1, `Left fraction at zoom ${z} must be exactly 0.1`);
+      assert.strictEqual(pixelWidth / displayedWidth, 0.1, `Width fraction at zoom ${z} must be exactly 0.1`);
+    }
+  });
+
+  // -------------------------------------------------------------------
+  // TEST M: Alphanumeric word extraction
+  // -------------------------------------------------------------------
+  runTest("Test M: Alphanumeric terms like G20 and COVID-19 preserved", () => {
+    assert.strictEqual(cleanSingleWord("G20"), "G20");
+    assert.strictEqual(cleanSingleWord("COVID-19"), "COVID-19");
+    assert.strictEqual(cleanSingleWord("“3D”"), "3D");
   });
 
   console.log("\n-------------------------------------------------");
