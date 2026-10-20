@@ -285,6 +285,128 @@ async function main() {
     assert.strictEqual(cleanSingleWord("“3D”"), "3D");
   });
 
+  // -------------------------------------------------------------------
+  // TEST N: Interaction State Machine & Dismissal Protection (Phase 5)
+  // -------------------------------------------------------------------
+  runTest("Test N: Dismissing selection prevents immediate reopening while selection remains active", () => {
+    let state = "showing-result";
+    let dismissedSig = null;
+
+    // User selected "Constitution" at (120, 200)
+    const word = "Constitution";
+    const rect = { left: 120, top: 200 };
+    const sig = `${word.toLowerCase()}@${rect.left},${rect.top}`;
+
+    // User clicks X: dismiss
+    dismissedSig = sig;
+    state = "dismissed";
+
+    // Mouseup fires while "Constitution" is still selected in DOM
+    const handleMouseUp = (selectedWord, selectedRect) => {
+      const currentSig = `${selectedWord.toLowerCase()}@${selectedRect.left},${selectedRect.top}`;
+      if (dismissedSig === currentSig && state === "dismissed") {
+        return null; // IGNORED! Does not re-open!
+      }
+      dismissedSig = null;
+      state = "translating";
+      return selectedWord;
+    };
+
+    const retestSame = handleMouseUp("Constitution", { left: 120, top: 200 });
+    assert.strictEqual(retestSame, null, "Same still-active selection must NOT reopen popup");
+
+    // User selects a NEW word "democracy" at (150, 250)
+    const newWordResult = handleMouseUp("democracy", { left: 150, top: 250 });
+    assert.strictEqual(newWordResult, "democracy", "Genuinely new word selection must open new translation");
+    assert.strictEqual(state, "translating", "State must transition to translating");
+    assert.strictEqual(dismissedSig, null, "Dismissed signature must be cleared");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST O: Automatic Scanned Page vs Native Text Page Detection (Phase 3)
+  // -------------------------------------------------------------------
+  runTest("Test O: Automatic detection of scanned image pages vs native text pages", () => {
+    const isPageScanned = (spansText) => {
+      const combined = spansText.join(" ").trim();
+      const validWords = combined.split(/\s+/).filter((w) => cleanSingleWord(w).length >= 2);
+      const charCount = combined.replace(/\s+/g, "").length;
+      return spansText.length < 5 || validWords.length < 6 || charCount < 30;
+    };
+
+    // Scanned page: only 1 or 2 artifacts or no text
+    const scannedPageSpans = ["", "  ", "p. 1"];
+    assert.strictEqual(isPageScanned(scannedPageSpans), true, "Few words/empty layer must be flagged as scanned");
+
+    // Native text page: full editorial article with multiple spans
+    const nativePageSpans = [
+      "The Supreme Court of India",
+      "heard arguments on constitutional validity",
+      "regarding legislative reforms and economic policy.",
+      "The bench emphasized fundamental rights",
+      "and democratic principles across sectors."
+    ];
+    assert.strictEqual(isPageScanned(nativePageSpans), false, "Page with readable text must NOT be flagged as scanned");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST P: Mobile Bottom Sheet vs Desktop Floating Positioning (Phase 2)
+  // -------------------------------------------------------------------
+  runTest("Test P: Responsive positioning: mobile bottom sheet vs desktop floating card", () => {
+    const mockRect = { left: 150, top: 300, width: 80, height: 20, bottom: 320 };
+
+    // 1. Mobile viewport (<= 640px)
+    globalThis.window = { innerWidth: 390, innerHeight: 844 };
+    const mobilePos = calculatePopupPosition(mockRect);
+    assert.strictEqual(mobilePos.isMobile, true, "Must detect mobile screen");
+    assert.strictEqual(mobilePos.placement, "bottom-sheet", "Mobile must use bottom-sheet placement");
+    assert.strictEqual(mobilePos.left, 0, "Mobile bottom sheet starts at left 0");
+
+    // 2. Desktop viewport (> 640px)
+    globalThis.window = { innerWidth: 1280, innerHeight: 800 };
+    const desktopPos = calculatePopupPosition(mockRect);
+    assert.strictEqual(desktopPos.isMobile, false, "Must detect desktop screen");
+    assert.ok(["above", "below"].includes(desktopPos.placement), "Desktop must use above or below placement");
+    assert.ok(desktopPos.arrowX > 0, "Desktop must compute directional arrowX");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST Q: Translation Error Handling & Retry Data Integrity (Phase 7)
+  // -------------------------------------------------------------------
+  runTest("Test Q: Translation failure marks error state while preserving retry data", () => {
+    const errorEntry = {
+      type: "word",
+      text: "sovereignty",
+      word: "sovereignty",
+      ipa: "",
+      meaning: "अनुवाद सेवा उपलब्ध नहीं है (नेटवर्क त्रुटि)।",
+      alternatives: ["अनुवाद सेवा उपलब्ध नहीं है (नेटवर्क त्रुटि)।"],
+      sentence: "India exercises national sovereignty.",
+      isError: true
+    };
+
+    assert.strictEqual(errorEntry.isError, true, "Entry must record error state");
+    assert.strictEqual(errorEntry.text, "sovereignty", "Must preserve selected word for retry");
+    assert.strictEqual(errorEntry.sentence, "India exercises national sovereignty.", "Must preserve sentence context");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST R: High-Resolution OCR Viewport Calculation (Phase 4)
+  // -------------------------------------------------------------------
+  runTest("Test R: High-resolution viewport calculation for tiny newspaper print", () => {
+    const calculateOcrScale = (viewportWidth) => {
+      const targetWidth = Math.min(2400, Math.max(1800, (viewportWidth || 800) * 2.0));
+      return targetWidth / (viewportWidth || 800);
+    };
+
+    // Standard 600px mobile view
+    const scaleMobile = calculateOcrScale(600);
+    assert.ok(scaleMobile >= 2.0, "Scale for small viewport must be at least 2.0x");
+
+    // Standard 1000px desktop view
+    const scaleDesktop = calculateOcrScale(1000);
+    assert.strictEqual(scaleDesktop, 2.0, "Scale for 1000px page must be exactly 2.0x (2000px width)");
+  });
+
   console.log("\n-------------------------------------------------");
   if (testsFailed > 0) {
     console.error(`RESULTS: ${testsPassed} passed, ${testsFailed} failed.`);

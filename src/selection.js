@@ -94,14 +94,29 @@ export function expandRangeToSelection(range) {
   return null;
 }
 
-// Calculate clamped floating popup position near target word or phrase
+// Calculate clamped floating popup position near target word or phrase (or mobile bottom sheet)
 export function calculatePopupPosition(wordRect, popupWidth = 360, popupHeight = 260) {
+  const isMobile = typeof window !== "undefined" && window.innerWidth <= 640;
+  if (isMobile) {
+    return {
+      left: 0,
+      top: 0,
+      arrowX: 0,
+      placement: "bottom-sheet",
+      isMobile: true
+    };
+  }
+
+  const winW = typeof window !== "undefined" ? window.innerWidth : 1280;
+  const winH = typeof window !== "undefined" ? window.innerHeight : 800;
+
   if (!wordRect || (!wordRect.width && !wordRect.height && !wordRect.top)) {
     return {
-      left: Math.max(12, (window.innerWidth - popupWidth) / 2),
+      left: Math.max(12, (winW - popupWidth) / 2),
       top: 100,
       arrowX: popupWidth / 2,
-      placement: "below"
+      placement: "below",
+      isMobile: false
     };
   }
 
@@ -111,14 +126,14 @@ export function calculatePopupPosition(wordRect, popupWidth = 360, popupHeight =
 
   // Horizontal position centered over word, clamped inside viewport
   let left = wordCenterX - popupWidth / 2;
-  left = Math.max(12, Math.min(left, window.innerWidth - popupWidth - 12));
+  left = Math.max(12, Math.min(left, winW - popupWidth - 12));
 
   // Pointer arrow positioned directly above/below word center
   let arrowX = wordCenterX - left;
   arrowX = Math.max(22, Math.min(arrowX, popupWidth - 26));
 
   const topBarrier = 80; // Below header
-  const bottomBarrier = window.innerHeight - 70; // Above bottom nav
+  const bottomBarrier = winH - 70; // Above bottom nav
 
   const spaceBelow = bottomBarrier - wordBottom;
   const spaceAbove = wordTop - topBarrier;
@@ -143,5 +158,5 @@ export function calculatePopupPosition(wordRect, popupWidth = 360, popupHeight =
     }
   }
 
-  return { left, top, arrowX, placement };
+  return { left, top, arrowX, placement, isMobile: false };
 }

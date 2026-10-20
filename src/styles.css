@@ -1047,6 +1047,51 @@ html, body {
   font-style: italic;
 }
 
+/* Translation Error & Retry UI (Phase 7) */
+.error-retry-box {
+  margin: 12px 0 8px;
+  padding: 12px 14px;
+  background: #fef2f2;
+  border: 1px solid #fed2d2;
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.error-message {
+  font-size: 13.5px;
+  color: #b91c1c;
+  margin: 0;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.retry-btn {
+  align-self: flex-start;
+  border: 0;
+  background: var(--primary-blue);
+  color: #ffffff;
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 7px 14px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.retry-btn:hover {
+  background: var(--primary-hover);
+  transform: translateY(-1px);
+}
+
+.sheet-handle {
+  display: none;
+}
+
 /* Page Navigator Drawer / Modal */
 .modal-backdrop {
   position: fixed;
@@ -1275,32 +1320,117 @@ html, body {
   }
 }
 
-@media (max-width: 480px) {
-  .top-header {
-    height: 68px;
-    padding: 0 12px;
+/* Tablet & Mobile Breakpoints (Phase 2) */
+@media (max-width: 640px) {
+  /* Sleek, Non-Obtrusive Bottom Sheet on Mobile */
+  .meaning-popup {
+    left: 0 !important;
+    right: 0 !important;
+    bottom: 0 !important;
+    top: auto !important;
+    width: 100% !important;
+    max-width: 100vw !important;
+    border-radius: 20px 20px 0 0 !important;
+    border-left: 0 !important;
+    border-right: 0 !important;
+    border-bottom: 0 !important;
+    border-top: 1px solid #bfd7f7 !important;
+    box-shadow: 0 -8px 30px rgba(10, 30, 60, 0.22) !important;
+    max-height: 48vh !important;
+    padding: 10px 16px max(16px, env(safe-area-inset-bottom, 16px)) !important;
+    animation: sheet-slide-up 0.22s cubic-bezier(0.16, 1, 0.3, 1) !important;
+    z-index: 1001 !important;
+    overflow-y: auto;
   }
 
-  .brand {
-    gap: 9px;
+  .meaning-popup:before {
+    display: none !important; /* Hide floating directional arrow on mobile bottom sheet */
   }
 
-  .logo svg {
-    width: 28px;
-    height: 28px;
+  .sheet-handle {
+    display: block !important;
+    width: 38px;
+    height: 4px;
+    background: #cbdcf2;
+    border-radius: 4px;
+    margin: 2px auto 10px;
+    cursor: grab;
   }
 
-  .brand-name {
-    font-size: 22px;
+  .popup-head {
+    gap: 10px;
   }
 
-  .tagline {
-    font-size: 10px;
+  .popup-head strong {
+    font-size: 19px !important;
+  }
+
+  .main-meaning {
+    font-size: 23px !important;
+    margin: 10px 0 6px !important;
+  }
+
+  .close-btn {
+    width: 34px !important;
+    height: 34px !important;
+    background: #edf4fc !important;
+    border-radius: 50% !important;
   }
 
   .reader-toolbar {
     gap: 4px;
     padding: 6px 8px;
+  }
+
+  .reader-area {
+    padding: 12px 6px;
+  }
+
+  .page-paper {
+    border: none;
+    box-shadow: 0 4px 18px rgba(15, 40, 80, 0.12);
+  }
+}
+
+@keyframes sheet-slide-up {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 480px) {
+  .top-header {
+    height: 64px;
+    padding: 0 10px;
+  }
+
+  .brand {
+    gap: 8px;
+  }
+
+  .logo svg {
+    width: 26px;
+    height: 26px;
+  }
+
+  .brand-name {
+    font-size: 20px;
+  }
+
+  .tagline {
+    font-size: 9.5px;
+  }
+
+  .header-actions {
+    gap: 6px;
+  }
+
+  .header-actions button {
+    width: 38px;
+    height: 38px;
   }
 
   .upload-inline span {
@@ -1311,11 +1441,18 @@ html, body {
     padding: 6px 8px;
   }
 
-  .meaning-popup {
-    padding: 13px 15px 12px;
+  .ocr-action-bar {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+    padding: 8px 10px;
   }
 
-  .main-meaning {
-    font-size: 23px;
+  .ocr-btn {
+    justify-content: center;
+  }
+
+  .ocr-toggle-btn {
+    text-align: center;
   }
 }

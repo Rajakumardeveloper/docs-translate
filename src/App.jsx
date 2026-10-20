@@ -21,7 +21,8 @@ import {
   Sparkles,
   ChevronDown,
   ChevronUp,
-  AlertCircle
+  AlertCircle,
+  RotateCcw
 } from "lucide-react";
 import { createWorker } from "tesseract.js";
 import { lookupText, normalizeLookupText } from "./dictionary.js";
@@ -86,6 +87,15 @@ export default function App() {
   const touchStartPos = useRef({ x: 0, y: 0 });
   const ocrCache = useRef(new Map());
 
+  // Interaction State Machine (Phase 5)
+  // States: 'idle' | 'selecting' | 'translating' | 'showing-result' | 'dismissed'
+  const [interactionState, setInteractionState] = useState("idle");
+  const dismissedSignatureRef = useRef(null);
+
+  // Background OCR Pipeline Refs (Phase 3 & 4)
+  const activeOcrPageRef = useRef(null);
+  const ocrAbortTokenRef = useRef(0);
+
   // PDF.js options to support diverse newspaper encodings, CMaps, and standard fonts
   const pdfOptions = useMemo(() => {
     let pathname = typeof window !== "undefined" ? window.location.pathname : "/";
@@ -112,6 +122,21 @@ export default function App() {
     setBusy(false);
   }, []);
 
+  // Explicit dismissal handler for (X) button: marks selection dismissed so it does not immediately reopen
+  const handleDismiss = useCallback((e) => {
+    e?.stopPropagation?.();
+    if (entry) {
+      const textSig = (entry.text || entry.word || "").trim().toLowerCase();
+      const rectSig = activeWordRect ? `${Math.round(activeWordRect.left)},${Math.round(activeWordRect.top)}` : "";
+      dismissedSignatureRef.current = `${textSig}@${rectSig}`;
+    }
+    setInteractionState("dismissed");
+    closePopup();
+    try {
+      window.getSelection()?.removeAllRanges();
+    } catch {}
+  }, [entry, activeWordRect, closePopup]);
+
   // Reset states on new file
   const onDocumentLoadSuccess = (doc) => {
     setPdfDoc(doc);
@@ -119,6 +144,12 @@ export default function App() {
     setPage(1);
     setPageJumpInput("1");
     closePopup();
+    setInteractionState("idle");
+    dismissedSignatureRef.current = null;
+    ocrAbortTokenRef.current++;
+    activeOcrPageRef.current = null;
+    setOcrBusy(false);
+    setOcrProgress(0);
     try {
       window.getSelection()?.removeAllRanges();
     } catch {}
@@ -188,6 +219,17 @@ export default function App() {
       text = clean;
     }
 
+    // Check against dismissed selection signature
+    const textSig = text.trim().toLowerCase();
+    const rectSig = rect ? `${Math.round(rect.left)},${Math.round(rect.top)}` : "";
+    const currentSig = `${textSig}@${rectSig}`;
+    if (dismissedSignatureRef.current === currentSig && interactionState === "dismissed") {
+      return;
+    }
+
+    dismissedSignatureRef.current = null;
+    setInteractionState("translating");
+
     // Increment request token to discard any previous in-flight responses
     const currentReqId = ++requestIdRef.current;
 
@@ -213,7 +255,8 @@ export default function App() {
       ipa: initialType === "word" ? `/${text}/` : "",
       meaning: initialType === "word" ? "अर्थ खोज रहे हैं…" : "अनुवाद कर रहे हैं… (Translating phrase…)",
       alternatives: [initialType === "word" ? "अर्थ खोज रहे हैं…" : "अनुवाद कर रहे हैं…"],
-      sentence
+      sentence,
+      isError: false
     });
     setBusy(true);
 
@@ -221,7 +264,8 @@ export default function App() {
       const res = await lookupText(text, signal, sentence);
       if (!signal.aborted && currentReqId === requestIdRef.current) {
         if (res) {
-          setEntry(res);
+          setEntry({ ...res, isError: false });
+          setInteractionState("showing-result");
           if (rect) {
             setPopupPos(calculatePopupPosition(rect, 360, 260));
           }
@@ -236,15 +280,30 @@ export default function App() {
           ipa: "",
           meaning: "अनुवाद सेवा उपलब्ध नहीं है (नेटवर्क त्रुटि)।",
           alternatives: ["अनुवाद सेवा उपलब्ध नहीं है (नेटवर्क त्रुटि)।"],
-          sentence
+          sentence,
+          isError: true
         });
+        setInteractionState("showing-result");
       }
     } finally {
       if (!signal.aborted && currentReqId === requestIdRef.current) {
         setBusy(false);
       }
     }
-  }, []);
+  }, [interactionState]);
+
+  // Retry failed translation
+  const retryTranslation = useCallback(() => {
+    if (entry && entry.text) {
+      openMeaning({
+        text: entry.text,
+        word: entry.word,
+        sentence: entry.sentence,
+        type: entry.type,
+        rect: activeWordRect
+      });
+    }
+  }, [entry, activeWordRect, openMeaning]);
 
   // Update popup position when scrolling reader area
   useEffect(() => {
@@ -264,25 +323,222 @@ export default function App() {
     };
   }, [entry, activeWordRect]);
 
-  // Check text content on page render (Mixed PDF Auto-Detection)
-  // NEVER triggers translation; only checks whether OCR overlay is needed for scanned pages
+  // High-Resolution Automatic & Manual OCR Pipeline for Scanned Newspaper Pages (Phase 3 & 4)
+  const processPageOCR = useCallback(
+    async (targetPage, isManual = false) => {
+      if (!pdfDoc && !pdfCanvas.current) {
+        if (isManual) setNotice("पहले PDF खोलें, फिर OCR चलाएँ।");
+        return;
+      }
+
+      if (ocrCache.current.has(targetPage)) {
+        if (page === targetPage) {
+          setOcrWords(ocrCache.current.get(targetPage));
+        }
+        if (isManual) setNotice(`पेज ${targetPage} के लिए कैश किया गया OCR लोड किया गया।`);
+        return;
+      }
+
+      if (activeOcrPageRef.current === targetPage) {
+        return;
+      }
+
+      const currentOcrToken = ++ocrAbortTokenRef.current;
+      activeOcrPageRef.current = targetPage;
+      setOcrBusy(true);
+      setOcrProgress(5);
+      setNotice(
+        isManual
+          ? `पेज ${targetPage}: OCR विश्लेषण शुरू हो रहा है (5%)…`
+          : `पेज ${targetPage}: स्कैन किया गया पेज — स्वचालित OCR विश्लेषण जारी है (5%)…`
+      );
+
+      let worker = null;
+      try {
+        let offscreen = null;
+
+        // Render at high resolution (1800px to 2400px width) so small 8pt-9pt newsprint is razor sharp
+        if (pdfDoc) {
+          try {
+            const pageObj = await pdfDoc.getPage(targetPage);
+            if (ocrAbortTokenRef.current !== currentOcrToken) return;
+
+            const unscaledViewport = pageObj.getViewport({ scale: 1.0 });
+            const targetWidth = Math.min(2400, Math.max(1800, (unscaledViewport.width || 800) * 2.0));
+            const ocrScale = targetWidth / (unscaledViewport.width || 800);
+            const ocrViewport = pageObj.getViewport({ scale: ocrScale });
+
+            offscreen = document.createElement("canvas");
+            offscreen.width = ocrViewport.width;
+            offscreen.height = ocrViewport.height;
+            const ctx = offscreen.getContext("2d", { willReadFrequently: true });
+            await pageObj.render({ canvasContext: ctx, viewport: ocrViewport }).promise;
+          } catch (renderErr) {
+            console.warn("High-res PDF offscreen render fallback:", renderErr);
+          }
+        }
+
+        // Fallback to active canvas if direct page render unavailable
+        if (!offscreen && pdfCanvas.current) {
+          const srcCanvas = pdfCanvas.current;
+          offscreen = document.createElement("canvas");
+          offscreen.width = srcCanvas.width;
+          offscreen.height = srcCanvas.height;
+          const ctx = offscreen.getContext("2d");
+          ctx.drawImage(srcCanvas, 0, 0);
+        }
+
+        if (!offscreen || ocrAbortTokenRef.current !== currentOcrToken) return;
+
+        // Image preprocessing for difficult newsprint: contrast enhancement & grayscale
+        const ctx = offscreen.getContext("2d");
+        ctx.filter = "grayscale(100%) contrast(150%)";
+        ctx.drawImage(offscreen, 0, 0);
+
+        setOcrProgress(20);
+
+        worker = await createWorker("eng", 1, {
+          logger: (m) => {
+            if (m.status === "recognizing text" && typeof m.progress === "number") {
+              if (ocrAbortTokenRef.current === currentOcrToken) {
+                setOcrProgress(Math.min(99, Math.round(m.progress * 100)));
+              }
+            }
+          }
+        });
+
+        if (ocrAbortTokenRef.current !== currentOcrToken) {
+          await worker.terminate();
+          return;
+        }
+
+        const ret = await worker.recognize(offscreen, {}, { blocks: true, tsv: true });
+        await worker.terminate();
+        worker = null;
+
+        if (ocrAbortTokenRef.current !== currentOcrToken) return;
+
+        const imageW = offscreen.width || 1;
+        const imageH = offscreen.height || 1;
+        const words = [];
+
+        if (ret.data?.blocks && ret.data.blocks.length > 0) {
+          for (const block of ret.data.blocks) {
+            for (const para of block.paragraphs || []) {
+              for (const line of para.lines || []) {
+                for (const w of line.words || []) {
+                  const clean = cleanSingleWord(w.text);
+                  if (clean && clean.length >= 2 && w.bbox && (w.confidence === undefined || w.confidence >= 25)) {
+                    words.push({
+                      text: w.text.trim(),
+                      clean,
+                      relBox: {
+                        x0: w.bbox.x0 / imageW,
+                        y0: w.bbox.y0 / imageH,
+                        x1: w.bbox.x1 / imageW,
+                        y1: w.bbox.y1 / imageH
+                      },
+                      confidence: w.confidence
+                    });
+                  }
+                }
+              }
+            }
+          }
+        } else if (ret.data?.tsv) {
+          const lines = ret.data.tsv.split("\n");
+          for (const line of lines) {
+            const cols = line.split("\t");
+            if (cols.length >= 12 && cols[0] === "5") {
+              const left = parseInt(cols[6], 10);
+              const top = parseInt(cols[7], 10);
+              const width = parseInt(cols[8], 10);
+              const height = parseInt(cols[9], 10);
+              const conf = parseFloat(cols[10]);
+              const rawText = cols[11]?.trim();
+              const clean = cleanSingleWord(rawText);
+              if (clean && clean.length >= 2 && !isNaN(left) && !isNaN(top) && (isNaN(conf) || conf >= 25)) {
+                words.push({
+                  text: rawText,
+                  clean,
+                  relBox: {
+                    x0: left / imageW,
+                    y0: top / imageH,
+                    x1: (left + width) / imageW,
+                    y1: (top + height) / imageH
+                  },
+                  confidence: conf
+                });
+              }
+            }
+          }
+        }
+
+        ocrCache.current.set(targetPage, words);
+
+        if (page === targetPage) {
+          setOcrWords(words);
+          if (words.length === 0) {
+            setNotice(`पेज ${targetPage} पर स्पष्ट टेक्स्ट नहीं मिला।`);
+          } else {
+            setNotice(`OCR सफल: पेज ${targetPage} पर ${words.length} शब्द पहचाने गए। शब्द या वाक्य चुनें।`);
+          }
+        }
+      } catch (err) {
+        if (ocrAbortTokenRef.current === currentOcrToken) {
+          console.error("OCR error:", err);
+          setNotice("OCR विश्लेषण पूरा नहीं हो सका।");
+        }
+      } finally {
+        if (worker) {
+          try {
+            await worker.terminate();
+          } catch {}
+        }
+        if (activeOcrPageRef.current === targetPage) {
+          activeOcrPageRef.current = null;
+          setOcrBusy(false);
+          setOcrProgress(0);
+        }
+      }
+    },
+    [pdfDoc, page]
+  );
+
+  const runOCR = useCallback(() => {
+    processPageOCR(page, true);
+  }, [processPageOCR, page]);
+
+  // Mixed PDF Auto-Detection & Automatic OCR Pipeline
+  // Inspects rendered text spans; if page is scanned/image-based, triggers OCR in background
+  // NEVER triggers translation automatically
   const onTextLayerRenderSuccess = useCallback(() => {
     if (!pagePaperRef.current) return;
     const textLayer = pagePaperRef.current.querySelector(".textLayer");
     if (!textLayer) return;
 
-    // Count rendered text spans directly without accessing full-page innerText
-    const spans = textLayer.querySelectorAll("span");
-    const hasFewWords = spans.length < 5;
-    setIsScannedPage(hasFewWords);
+    // Assess usability of native text layer
+    const spans = Array.from(textLayer.querySelectorAll("span"));
+    const combinedText = spans.map((s) => s.textContent || "").join(" ").trim();
+    const validWords = combinedText.split(/\s+/).filter((w) => cleanSingleWord(w).length >= 2);
+    const charCount = combinedText.replace(/\s+/g, "").length;
 
-    // If page is scanned and we already have cached OCR results for this page, load them
-    if (hasFewWords && ocrCache.current.has(page)) {
-      setOcrWords(ocrCache.current.get(page));
-    } else if (!hasFewWords && !ocrCache.current.has(page)) {
+    // A page is scanned if it has fewer than 6 recognizable words or < 30 characters
+    const isScanned = spans.length < 5 || validWords.length < 6 || charCount < 30;
+    setIsScannedPage(isScanned);
+
+    if (isScanned) {
+      if (ocrCache.current.has(page)) {
+        setOcrWords(ocrCache.current.get(page));
+      } else {
+        setOcrWords([]);
+        // Automatically start background OCR for this scanned page
+        processPageOCR(page, false);
+      }
+    } else {
       setOcrWords([]);
     }
-  }, [page]);
+  }, [page, processPageOCR]);
 
   // Process text selection across PDF text spans or OCR overlays
   const processSelectionOrClick = useCallback(
@@ -321,6 +577,15 @@ export default function App() {
         if (isInsideTextLayer || isInsideOcr) {
           const found = expandRangeToSelection(range);
           if (found && found.text && found.text.trim()) {
+            const rect = found.rect;
+            const textSig = found.text.trim().toLowerCase();
+            const rectSig = rect ? `${Math.round(rect.left)},${Math.round(rect.top)}` : "";
+            const currentSig = `${textSig}@${rectSig}`;
+
+            if (dismissedSignatureRef.current === currentSig && interactionState === "dismissed") {
+              return; // Do not reopen previously dismissed selection!
+            }
+
             openMeaning(found);
             return;
           }
@@ -333,22 +598,32 @@ export default function App() {
         const word = ocrSpan.getAttribute("data-word");
         const clean = cleanSingleWord(word);
         if (clean && clean.length >= 2) {
+          const rect = ocrSpan.getBoundingClientRect();
+          const currentSig = `${clean.toLowerCase()}@${Math.round(rect.left)},${Math.round(rect.top)}`;
+          if (dismissedSignatureRef.current === currentSig && interactionState === "dismissed") {
+            return;
+          }
+
           openMeaning({
             type: "word",
             text: clean,
             wordCount: 1,
-            rect: ocrSpan.getBoundingClientRect(),
+            rect,
             sentence: ""
           });
           return;
         }
       }
 
-      // 3. Otherwise: No active selection was made (clicked background, scrolled, zoomed, or empty click)
-      // Dismiss active popup safely and NEVER trigger automatic translation
-      closePopup();
+      // 3. Otherwise: User clicked blank space, background, or collapsed selection
+      // Dismiss active popup safely, transition to idle, clear dismissed signature
+      if (entry) {
+        closePopup();
+      }
+      setInteractionState("idle");
+      dismissedSignatureRef.current = null;
     },
-    [openMeaning, closePopup]
+    [entry, interactionState, openMeaning, closePopup]
   );
 
   useEffect(() => {
@@ -577,124 +852,7 @@ export default function App() {
     setSearchNotice(`परिणाम ${prevIdx + 1} / ${searchResults.length}`);
   };
 
-  // Advanced OCR for scanned & image-based newspaper pages
-  const runOCR = async () => {
-    if (!pdfCanvas.current) {
-      setNotice("पहले PDF खोलें, फिर OCR चलाएँ।");
-      return;
-    }
 
-    // Check if page already has cached OCR
-    if (ocrCache.current.has(page)) {
-      setOcrWords(ocrCache.current.get(page));
-      setNotice(`पेज ${page} के लिए कैश किया गया OCR लोड किया गया।`);
-      return;
-    }
-
-    setOcrBusy(true);
-    setOcrProgress(5);
-    setNotice("OCR इंजन शुरू हो रहा है (Initializing OCR Engine)…");
-
-    try {
-      const worker = await createWorker("eng", 1, {
-        logger: (m) => {
-          if (m.status === "recognizing text" && typeof m.progress === "number") {
-            setOcrProgress(Math.round(m.progress * 100));
-          }
-        }
-      });
-
-      // Preprocess image for difficult/low-contrast newsprint: apply contrast & grayscale
-      const srcCanvas = pdfCanvas.current;
-      const imageW = srcCanvas.width || 1;
-      const imageH = srcCanvas.height || 1;
-      const offscreen = document.createElement("canvas");
-      offscreen.width = srcCanvas.width;
-      offscreen.height = srcCanvas.height;
-      const ctx = offscreen.getContext("2d");
-      ctx.filter = "grayscale(100%) contrast(140%)";
-      ctx.drawImage(srcCanvas, 0, 0);
-
-      setNotice("स्कैन किए गए अख़बार का विश्लेषण जारी है…");
-      const ret = await worker.recognize(offscreen, {}, { blocks: true, tsv: true });
-      await worker.terminate();
-
-      const words = [];
-      if (ret.data?.blocks && ret.data.blocks.length > 0) {
-        for (const block of ret.data.blocks) {
-          for (const para of block.paragraphs || []) {
-            for (const line of para.lines || []) {
-              for (const w of line.words || []) {
-                const clean = cleanSingleWord(w.text);
-                if (clean && clean.length >= 2 && w.bbox) {
-                  const left = w.bbox.x0;
-                  const top = w.bbox.y0;
-                  const right = w.bbox.x1;
-                  const bottom = w.bbox.y1;
-                  words.push({
-                    text: w.text.trim(),
-                    clean,
-                    relBox: {
-                      x0: left / imageW,
-                      y0: top / imageH,
-                      x1: right / imageW,
-                      y1: bottom / imageH
-                    },
-                    confidence: w.confidence
-                  });
-                }
-              }
-            }
-          }
-        }
-      } else if (ret.data?.tsv) {
-        const lines = ret.data.tsv.split("\n");
-        for (const line of lines) {
-          const cols = line.split("\t");
-          if (cols.length >= 12 && cols[0] === "5") {
-            const left = parseInt(cols[6], 10);
-            const top = parseInt(cols[7], 10);
-            const width = parseInt(cols[8], 10);
-            const height = parseInt(cols[9], 10);
-            const conf = parseFloat(cols[10]);
-            const rawText = cols[11]?.trim();
-            const clean = cleanSingleWord(rawText);
-            if (clean && clean.length >= 2 && !isNaN(left) && !isNaN(top)) {
-              words.push({
-                text: rawText,
-                clean,
-                relBox: {
-                  x0: left / imageW,
-                  y0: top / imageH,
-                  x1: (left + width) / imageW,
-                  y1: (top + height) / imageH
-                },
-                confidence: conf
-              });
-            }
-          }
-        }
-      }
-
-      console.log(`OCR detected ${words.length} words with relative bounding boxes.`);
-
-      ocrCache.current.set(page, words);
-      setOcrWords(words);
-      setIsScannedPage(false);
-
-      if (words.length === 0) {
-        setNotice("इस पेज पर टेक्स्ट नहीं मिला। बेहतर स्पष्ट स्कैन आज़माएँ।");
-      } else {
-        setNotice(`OCR सफल: पेज पर ${words.length} शब्द पहचाने गए। शब्द या वाक्य चुनें।`);
-      }
-    } catch (err) {
-      console.error("OCR error:", err);
-      setNotice("OCR नहीं चल पाया। इंटरनेट कनेक्शन जाँचें।");
-    } finally {
-      setOcrBusy(false);
-      setOcrProgress(0);
-    }
-  };
 
   return (
     <div className="app-shell">
@@ -1024,7 +1182,7 @@ export default function App() {
         )}
       </main>
 
-      {/* Floating Hindi Dictionary & Phrase Translation Popup */}
+      {/* Floating Hindi Dictionary & Phrase Translation Popup (or Mobile Bottom Sheet) */}
       {entry && (
         <div
           ref={popupRef}
@@ -1038,6 +1196,9 @@ export default function App() {
           role="dialog"
           aria-label={`Hindi Meaning of ${entry.text || entry.word}`}
         >
+          {/* Mobile Bottom Sheet Drag Handle */}
+          <div className="sheet-handle" aria-hidden="true" />
+
           {/* Header */}
           <div className="popup-head">
             <button
@@ -1061,26 +1222,37 @@ export default function App() {
 
             <button
               className="close-btn"
-              onClick={() => {
-                setEntry(null);
-                setActiveWordRect(null);
-              }}
+              onClick={handleDismiss}
               aria-label="Close Dialog"
+              title="Close (X)"
             >
               <X size={18} />
             </button>
           </div>
 
-          {/* Main Meaning / Translation */}
-          <div className="main-meaning">
-            {entry.alternatives?.[altIndex] || entry.meaning}
-          </div>
+          {/* Main Meaning / Translation or Error with Retry */}
+          {entry.isError ? (
+            <div className="error-retry-box">
+              <p className="error-message">{entry.meaning}</p>
+              <button
+                className="retry-btn"
+                onClick={retryTranslation}
+                aria-label="Retry Translation"
+              >
+                <RotateCcw size={15} /> पुनः प्रयास करें (Retry)
+              </button>
+            </div>
+          ) : (
+            <div className="main-meaning">
+              {entry.alternatives?.[altIndex] || entry.meaning}
+            </div>
+          )}
 
           {/* English definition if available */}
-          {entry.definition && <p className="definition">{entry.definition}</p>}
+          {entry.definition && !entry.isError && <p className="definition">{entry.definition}</p>}
 
           {/* Alternative Meanings Pills (only when multiple alternatives exist) */}
-          {entry.alternatives && entry.alternatives.length > 1 && (
+          {entry.alternatives && entry.alternatives.length > 1 && !entry.isError && (
             <>
               <div className="other-label">Other meanings:</div>
               <div className="alternatives">
@@ -1100,7 +1272,7 @@ export default function App() {
           )}
 
           {/* Footer with arrows & position indicator if multiple alternatives exist */}
-          {entry.alternatives && entry.alternatives.length > 1 && (
+          {entry.alternatives && entry.alternatives.length > 1 && !entry.isError && (
             <div className="popup-footer">
               <button
                 onClick={() => changeAlt(-1)}
