@@ -247,7 +247,7 @@ export function extractSurroundingSentence(range, normalizedText) {
       if (currentIdx !== -1) {
         const startFontSize = getSpanFontSize(startSpan);
 
-        // Gather spans around current selection with structural boundary awareness (headlines vs body)
+        // Gather spans around current selection with structural boundary awareness (headlines vs body, and column boundaries)
         let windowStart = currentIdx;
         while (windowStart > 0 && windowStart > currentIdx - 15) {
           const prevSpan = allSpans[windowStart - 1];
@@ -256,6 +256,17 @@ export function extractSurroundingSentence(range, normalizedText) {
           if (startFontSize > 0 && prevFs > 0 && Math.abs(prevFs - startFontSize) / Math.max(prevFs, startFontSize) > 0.35) {
             break;
           }
+          // Stop at newspaper column boundary (non-overlapping horizontal bounds with vertical gap)
+          try {
+            const rCurr = startSpan.getBoundingClientRect ? startSpan.getBoundingClientRect() : null;
+            const rPrev = prevSpan.getBoundingClientRect ? prevSpan.getBoundingClientRect() : null;
+            if (rCurr && rPrev && rCurr.width > 0 && rPrev.width > 0) {
+              const noHorizontalOverlap = rPrev.right < rCurr.left - 30 || rCurr.right < rPrev.left - 30;
+              if (noHorizontalOverlap && Math.abs(rCurr.top - rPrev.top) > 8) {
+                break;
+              }
+            }
+          } catch {}
           const prevText = (prevSpan.textContent || "").trim();
           if (/[.?!]$/.test(prevText)) {
             break;
@@ -270,6 +281,17 @@ export function extractSurroundingSentence(range, normalizedText) {
           if (startFontSize > 0 && nextFs > 0 && Math.abs(nextFs - startFontSize) / Math.max(nextFs, startFontSize) > 0.35) {
             break;
           }
+          // Stop at newspaper column boundary
+          try {
+            const rCurr = startSpan.getBoundingClientRect ? startSpan.getBoundingClientRect() : null;
+            const rNext = nextSpan.getBoundingClientRect ? nextSpan.getBoundingClientRect() : null;
+            if (rCurr && rNext && rCurr.width > 0 && rNext.width > 0) {
+              const noHorizontalOverlap = rNext.right < rCurr.left - 30 || rCurr.right < rNext.left - 30;
+              if (noHorizontalOverlap && Math.abs(rCurr.top - rNext.top) > 8) {
+                break;
+              }
+            }
+          } catch {}
           const currText = (allSpans[windowEnd].textContent || "").trim();
           if (/[.?!]$/.test(currText)) {
             break;
@@ -389,13 +411,44 @@ export function expandRangeToSelection(range) {
 
   // CASE 1: MULTI-WORD PHRASE OR SENTENCE (e.g. "economic growth in India", "Constitution of India")
   if (words.length > 1) {
-    const isSentence = /[.?!]$/.test(normalized) || words.length >= 6;
+    let phraseText = normalized;
+    // Check if initial word or trailing word continuation was split across PDF textLayer spans
+    try {
+      if (startSpan?.closest?.(".textLayer")) {
+        const textInSpan = startSpan.textContent || "";
+        const startOff = typeof range.startOffset === "number" ? range.startOffset : 0;
+        const leadingText = textInSpan.slice(0, startOff);
+        if (!leadingText || !/\S/.test(leadingText)) {
+          const prefix = getPreviousSpanWordPrefix(startSpan);
+          if (prefix && !phraseText.toLowerCase().startsWith(prefix.toLowerCase())) {
+            phraseText = prefix + phraseText;
+          }
+        }
+
+        const endIsTextNode = range.endContainer?.nodeType === (typeof Node !== "undefined" ? Node.TEXT_NODE : 3);
+        const endSpan = endIsTextNode ? range.endContainer.parentElement : range.endContainer;
+        const textInEndSpan = endSpan?.textContent || "";
+        const endOff = typeof range.endOffset === "number" ? range.endOffset : textInEndSpan.length;
+        const trailingText = textInEndSpan.slice(endOff);
+        if (!trailingText || !/\S/.test(trailingText)) {
+          const suffix = getNextSpanWordSuffix(endSpan);
+          if (suffix && !phraseText.toLowerCase().endsWith(suffix.toLowerCase())) {
+            phraseText = phraseText + suffix;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("Multi-span phrase expansion warning:", e);
+    }
+
+    const phraseWords = phraseText.split(/\s+/).filter(Boolean);
+    const isSentence = /[.?!]$/.test(phraseText) || phraseWords.length >= 6;
     return {
       type: isSentence ? "sentence" : "phrase",
-      text: normalized,
-      wordCount: words.length,
+      text: phraseText,
+      wordCount: phraseWords.length,
       rect,
-      sentence: sentence || normalized,
+      sentence: sentence || phraseText,
       region: regionInfo.region,
       fontSize: regionInfo.fontSize,
       isBold: regionInfo.isBold

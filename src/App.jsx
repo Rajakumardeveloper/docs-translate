@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Document, Page, pdfjs } from "react-pdf";
+import { Document, pdfjs } from "react-pdf";
+import PdfPagePaper from "./PdfPagePaper.jsx";
 import {
   BookOpen,
   Search,
@@ -131,6 +132,64 @@ export default function App() {
   const pendingScrollRef = useRef(null);
   const isMousePanningRef = useRef(false);
   const mouseDragStartRef = useRef({ startX: 0, startY: 0, scrollLeft: 0, scrollTop: 0, hasMoved: false });
+  const panRafRef = useRef(null);
+  const selectionSettlingTimerRef = useRef(null);
+
+  // Responsive base width debounced to prevent unnecessary PDF re-renders on minor pixel shifts
+  const [baseWidth, setBaseWidth] = useState(() =>
+    typeof window !== "undefined" ? Math.min(window.innerWidth - 24, 920) : 800
+  );
+
+  useEffect(() => {
+    let timeoutId = null;
+    const onResize = () => {
+      if (timeoutId) clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => {
+        const w = typeof window !== "undefined" ? Math.min(window.innerWidth - 24, 920) : 800;
+        setBaseWidth((prev) => (Math.abs(prev - w) > 24 ? w : prev));
+      }, 150);
+    };
+    window.addEventListener("resize", onResize, { passive: true });
+    return () => {
+      window.removeEventListener("resize", onResize);
+      if (timeoutId) clearTimeout(timeoutId);
+    };
+  }, []);
+
+  // Desktop Ctrl/Cmd + Wheel Zoom with focal-point preservation
+  useEffect(() => {
+    const reader = readerAreaRef.current;
+    if (!reader) return;
+
+    const onWheel = (e) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        const factor = e.deltaY < 0 ? 1.15 : 0.87;
+        const newScale = Math.min(3.0, Math.max(0.5, +(scale * factor).toFixed(2)));
+        if (Math.abs(newScale - scale) > 0.02) {
+          const rect = reader.getBoundingClientRect();
+          const mouseX = e.clientX - rect.left;
+          const mouseY = e.clientY - rect.top;
+          const focalX = reader.scrollLeft + mouseX;
+          const focalY = reader.scrollTop + mouseY;
+          const ratio = newScale / scale;
+
+          pendingScrollRef.current = {
+            left: Math.max(0, focalX * ratio - mouseX),
+            top: Math.max(0, focalY * ratio - mouseY)
+          };
+
+          closePopup();
+          setScale(newScale);
+        }
+      }
+    };
+
+    reader.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      reader.removeEventListener("wheel", onWheel);
+    };
+  }, [scale, closePopup]);
 
   // Apply focal-point preserving scroll offset after scale change
   useEffect(() => {
@@ -386,30 +445,37 @@ export default function App() {
     }
   }, [interactionState]);
 
-  // Reposition popup dynamically on scroll, resize, or scale changes to stay anchored near target word
+  // Reposition popup smoothly on scroll, resize, or scale changes using requestAnimationFrame
   useEffect(() => {
     if (!entry) return;
-    const updatePosition = () => {
-      if (activeTargetElRef.current && activeTargetElRef.current.isConnected) {
-        const newRect = activeTargetElRef.current.getBoundingClientRect();
-        setPopupPos(calculatePopupPosition(newRect, 320, 160));
-      } else if (activeWordRect) {
-        setPopupPos(calculatePopupPosition(activeWordRect, 320, 160));
-      }
+    let rafId = null;
+
+    const scheduleUpdate = () => {
+      if (rafId) return;
+      rafId = requestAnimationFrame(() => {
+        rafId = null;
+        if (activeTargetElRef.current && activeTargetElRef.current.isConnected) {
+          const newRect = activeTargetElRef.current.getBoundingClientRect();
+          setPopupPos(calculatePopupPosition(newRect, 320, 160));
+        } else if (activeWordRect) {
+          setPopupPos(calculatePopupPosition(activeWordRect, 320, 160));
+        }
+      });
     };
 
-    window.addEventListener("resize", updatePosition, { passive: true });
-    window.addEventListener("scroll", updatePosition, { passive: true });
+    window.addEventListener("resize", scheduleUpdate, { passive: true });
+    window.addEventListener("scroll", scheduleUpdate, { passive: true });
     const readerEl = readerAreaRef.current;
     if (readerEl) {
-      readerEl.addEventListener("scroll", updatePosition, { passive: true });
+      readerEl.addEventListener("scroll", scheduleUpdate, { passive: true });
     }
 
     return () => {
-      window.removeEventListener("resize", updatePosition);
-      window.removeEventListener("scroll", updatePosition);
+      if (rafId) cancelAnimationFrame(rafId);
+      window.removeEventListener("resize", scheduleUpdate);
+      window.removeEventListener("scroll", scheduleUpdate);
       if (readerEl) {
-        readerEl.removeEventListener("scroll", updatePosition);
+        readerEl.removeEventListener("scroll", scheduleUpdate);
       }
     };
   }, [entry, scale, activeWordRect]);
@@ -426,24 +492,6 @@ export default function App() {
       });
     }
   }, [entry, activeWordRect, openMeaning]);
-
-  // Update popup position when scrolling reader area
-  useEffect(() => {
-    const handleScrollOrResize = () => {
-      if (entry && activeWordRect) {
-        setPopupPos(calculatePopupPosition(activeWordRect, 320, 160));
-      }
-    };
-    const area = readerAreaRef.current;
-    if (area) {
-      area.addEventListener("scroll", handleScrollOrResize, { passive: true });
-    }
-    window.addEventListener("resize", handleScrollOrResize);
-    return () => {
-      if (area) area.removeEventListener("scroll", handleScrollOrResize);
-      window.removeEventListener("resize", handleScrollOrResize);
-    };
-  }, [entry, activeWordRect]);
 
   // High-Resolution Automatic & Manual OCR Pipeline for Scanned Newspaper Pages (Phase 3 & 4)
   const processPageOCR = useCallback(
@@ -869,8 +917,12 @@ export default function App() {
         const touch = e.changedTouches[0];
         const dx = Math.abs(touch.clientX - touchStartPos.current.x);
         const dy = Math.abs(touch.clientY - touchStartPos.current.y);
-        // If movement exceeds 10px, this was a scroll or pinch-zoom, not a tap or selection
-        if (dx > 10 || dy > 10) {
+
+        const sel = typeof window !== "undefined" ? window.getSelection() : null;
+        const hasSelection = sel && !sel.isCollapsed && sel.rangeCount > 0 && sel.toString().trim().length > 0;
+
+        // If there is NO active text selection, movement > 10px indicates a scroll or pinch gesture
+        if (!hasSelection && (dx > 10 || dy > 10)) {
           return;
         }
 
@@ -1056,15 +1108,26 @@ export default function App() {
 
     if (Math.hypot(dx, dy) > 5) {
       mouseDragStartRef.current.hasMoved = true;
-      reader.scrollLeft = mouseDragStartRef.current.scrollLeft - dx;
-      reader.scrollTop = mouseDragStartRef.current.scrollTop - dy;
-      if (!reader.classList.contains("panning")) {
-        reader.classList.add("panning");
+      if (!panRafRef.current) {
+        panRafRef.current = requestAnimationFrame(() => {
+          panRafRef.current = null;
+          if (reader && isMousePanningRef.current) {
+            reader.scrollLeft = mouseDragStartRef.current.scrollLeft - dx;
+            reader.scrollTop = mouseDragStartRef.current.scrollTop - dy;
+            if (!reader.classList.contains("panning")) {
+              reader.classList.add("panning");
+            }
+          }
+        });
       }
     }
   };
 
   const handleMouseUp = (e) => {
+    if (panRafRef.current) {
+      cancelAnimationFrame(panRafRef.current);
+      panRafRef.current = null;
+    }
     if (isMousePanningRef.current) {
       isMousePanningRef.current = false;
       const reader = readerAreaRef.current;
@@ -1219,6 +1282,13 @@ export default function App() {
     const nextIdx = (currIdx + 1) % levels.length;
     changeScaleWithFocalPoint(levels[nextIdx]);
   };
+
+  const fitToWidth = useCallback(() => {
+    const reader = readerAreaRef.current;
+    if (!reader || !file) return;
+    const targetScale = Math.min(2.5, Math.max(0.5, +((reader.clientWidth - 40) / 600).toFixed(2)));
+    changeScaleWithFocalPoint(targetScale);
+  }, [file, changeScaleWithFocalPoint]);
 
   // Fullscreen toggle
   const toggleFullscreen = () => {
@@ -1425,6 +1495,15 @@ export default function App() {
           >
             <Plus size={17} />
           </button>
+          <button
+            className="fit-width-btn"
+            onClick={fitToWidth}
+            disabled={!file}
+            aria-label="Fit to Width"
+            title="Fit to Width"
+          >
+            Fit
+          </button>
         </div>
 
         <button
@@ -1615,80 +1694,20 @@ export default function App() {
                 </div>
               }
             >
-              <div className="page-paper" ref={pagePaperRef}>
-                <Page
-                  pageNumber={page}
-                  scale={scale}
-                  width={Math.min(window.innerWidth - 24, 920)}
-                  renderTextLayer={true}
-                  renderAnnotationLayer={true}
-                  canvasRef={pdfCanvas}
-                  onRenderTextLayerSuccess={onTextLayerRenderSuccess}
-                  loading={
-                    <div className="page-loading-state">
-                      <LoaderCircle size={22} className="spin" />
-                      <span>पेज {page} लोड हो रहा है…</span>
-                    </div>
-                  }
-                />
-
-                {/* Scanned PDF In-Page OCR Processing Indicator */}
-                {isScannedPage && ocrBusy && (
-                  <div className="ocr-processing-overlay" aria-live="polite">
-                    <div className="ocr-processing-card">
-                      <div className="ocr-spinner">
-                        <LoaderCircle size={38} className="spin" />
-                      </div>
-                      <h3 className="ocr-processing-title">स्कैन किया गया पेज प्रोसेस हो रहा है…</h3>
-                      <p className="ocr-processing-sub">
-                        Processing scanned newspaper with OCR ({ocrProgress}%)
-                      </p>
-                      <div className="ocr-progress-track">
-                        <div
-                          className="ocr-progress-fill"
-                          style={{ width: `${Math.max(8, ocrProgress)}%` }}
-                        />
-                      </div>
-                      <span className="ocr-processing-tip">
-                        टेक्स्ट पहचान पूर्ण होते ही आप किसी भी शब्द पर टैप करके अर्थ देख सकेंगे।
-                      </span>
-                    </div>
-                  </div>
-                )}
-
-                {/* Scanned PDF interactive transparent selectable OCR layer */}
-                {isScannedPage && ocrWords.length > 0 && showOcrBoxes && (
-                  <div className="ocr-overlay" aria-label="Interactive OCR selectable words">
-                    {ocrWords.map((item, idx) => {
-                      const leftPct = (item.relBox.x0 * 100).toFixed(3);
-                      const topPct = (item.relBox.y0 * 100).toFixed(3);
-                      const widthPct = Math.max(0.1, (item.relBox.x1 - item.relBox.x0) * 100).toFixed(3);
-                      const heightPct = Math.max(0.1, (item.relBox.y1 - item.relBox.y0) * 100).toFixed(3);
-
-                      return (
-                        <span
-                          key={`${item.clean}-${idx}`}
-                          className={`ocr-word-span ${
-                            entry?.text?.toLowerCase() === item.clean.toLowerCase() ? "active" : ""
-                          }`}
-                          style={{
-                            left: `${leftPct}%`,
-                            top: `${topPct}%`,
-                            width: `${widthPct}%`,
-                            height: `${heightPct}%`
-                          }}
-                          data-word={item.clean}
-                          data-idx={idx}
-                          data-conf={Math.round(item.confidence || 0)}
-                          title={`“${item.clean}” (OCR: ${Math.round(item.confidence || 0)}%) — Click for meaning or drag to select`}
-                        >
-                          {item.text}{" "}
-                        </span>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
+              <PdfPagePaper
+                pageNumber={page}
+                scale={scale}
+                baseWidth={baseWidth}
+                pdfCanvasRef={pdfCanvas}
+                onTextLayerRenderSuccess={onTextLayerRenderSuccess}
+                isScannedPage={isScannedPage}
+                ocrBusy={ocrBusy}
+                ocrProgress={ocrProgress}
+                ocrWords={ocrWords}
+                showOcrBoxes={showOcrBoxes}
+                activeSelectedText={entry?.text || entry?.word || ""}
+                pagePaperRef={pagePaperRef}
+              />
             </Document>
 
             {/* OCR Bar for Scanned/Image-based newspapers */}

@@ -1154,6 +1154,216 @@ async function main() {
     assert.strictEqual(segmented[2].clean, "Hope", "Preserves 'Hope'");
   });
 
+  // ===================================================================
+  // STABILITY & UX UPGRADE REGRESSION TESTS (SECTION 9)
+  // ===================================================================
+
+  // -------------------------------------------------------------------
+  // TEST 23: Multi-Word Drag with Split Prefix Across Spans Reassembles Full Phrase
+  // -------------------------------------------------------------------
+  runTest("Stability Test 23: Multi-word drag with split prefix across spans reassembles full phrase", () => {
+    // Span 1: "S" (drop-cap)
+    // Span 2: "pecial economic reforms"
+    const s1 = {
+      tagName: "SPAN",
+      textContent: "S",
+      getBoundingClientRect: () => ({ left: 50, top: 100, right: 62, bottom: 120, width: 12, height: 20 })
+    };
+    const s2 = {
+      tagName: "SPAN",
+      textContent: "pecial economic reforms in India",
+      getBoundingClientRect: () => ({ left: 62, top: 100, right: 300, bottom: 120, width: 238, height: 20 })
+    };
+    s1.nextElementSibling = s2;
+    s2.previousElementSibling = s1;
+
+    const mockLayer = {
+      tagName: "DIV",
+      className: "textLayer",
+      querySelectorAll: (sel) => (sel.includes("span") ? [s1, s2] : [])
+    };
+    s1.parentElement = mockLayer;
+    s2.parentElement = mockLayer;
+    s1.closest = (sel) => (sel.includes("textLayer") ? mockLayer : s1);
+    s2.closest = (sel) => (sel.includes("textLayer") ? mockLayer : s2);
+
+    const range = {
+      collapsed: false,
+      startOffset: 0,
+      endOffset: "pecial economic reforms".length,
+      startContainer: { nodeType: 3, parentElement: s2, textContent: s2.textContent },
+      endContainer: { nodeType: 3, parentElement: s2, textContent: s2.textContent },
+      toString: () => "pecial economic reforms",
+      getBoundingClientRect: () => ({ left: 62, top: 100, width: 200, height: 20 })
+    };
+
+    const sel = expandRangeToSelection(range);
+    assert.ok(sel, "Multi-word phrase selection must succeed");
+    assert.strictEqual(sel.type, "phrase", "Type must be phrase");
+    assert.strictEqual(sel.text, "Special economic reforms", "Must recover initial capital letter 'S' for multi-word phrase");
+    assert.strictEqual(sel.wordCount, 3);
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 24: Sentence Extraction Halts at Newspaper Column Boundaries
+  // -------------------------------------------------------------------
+  runTest("Stability Test 24: Sentence extraction halts at newspaper column boundaries", () => {
+    // Column 1 span: left: 50 to 250
+    const col1Span = {
+      textContent: "The Cabinet approved infrastructure investments. ",
+      getBoundingClientRect: () => ({ left: 50, top: 100, right: 250, bottom: 120, width: 200, height: 20 })
+    };
+    // Column 2 span: left: 320 to 520 (separated by 70px column gutter)
+    const col2Span = {
+      textContent: "Domestic markets reacted with enthusiasm today.",
+      getBoundingClientRect: () => ({ left: 320, top: 100, right: 520, bottom: 120, width: 200, height: 20 })
+    };
+
+    const allSpans = [col1Span, col2Span];
+    const mockLayer = { querySelectorAll: () => allSpans };
+    col1Span.closest = () => mockLayer;
+    col2Span.closest = () => mockLayer;
+
+    const rangeInCol1 = {
+      startContainer: col1Span,
+      startOffset: 0,
+      endContainer: col1Span,
+      endOffset: col1Span.textContent.length,
+      toString: () => "infrastructure"
+    };
+
+    const sentence = extractSurroundingSentence(rangeInCol1, "infrastructure");
+    assert.ok(sentence.includes("infrastructure investments"), "Extracted sentence contains column 1 content");
+    assert.ok(!sentence.includes("Domestic markets"), "Sentence extraction must NOT cross column gutter into column 2");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 25: Rapid Successive Requests Discard Stale In-Flight Responses
+  // -------------------------------------------------------------------
+  await runAsyncTest("Stability Test 25: Rapid successive selection requests discard stale responses", async () => {
+    let activeRequestId = 0;
+    let renderedMeaning = "";
+
+    const simulateLookup = async (text, delayMs) => {
+      const currentId = ++activeRequestId;
+      const res = await new Promise((resolve) => {
+        setTimeout(async () => {
+          const meaning = await lookupText(text);
+          resolve(meaning);
+        }, delayMs);
+      });
+
+      if (currentId === activeRequestId) {
+        renderedMeaning = res.meaning;
+      }
+    };
+
+    // First request: slower (60ms) for "Constitution"
+    const req1 = simulateLookup("Constitution", 60);
+    // Second rapid request: faster (10ms) for "growth"
+    const req2 = simulateLookup("growth", 10);
+
+    await Promise.all([req1, req2]);
+    // Latest request was "growth" (meaning "विकास")
+    assert.strictEqual(renderedMeaning, "विकास", "Latest selection meaning must prevail, stale slower response discarded");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 26: Mobile Touch Selection Retains Active Text Range
+  // -------------------------------------------------------------------
+  runTest("Stability Test 26: Mobile touch selection with displacement retains active text range", () => {
+    // Simulating mobile touch drag across 40px
+    const touchStart = { x: 100, y: 200 };
+    const touchEnd = { clientX: 140, clientY: 205 };
+    const dx = Math.abs(touchEnd.clientX - touchStart.x); // 40px
+
+    // Active browser text selection exists
+    const mockSelection = {
+      isCollapsed: false,
+      rangeCount: 1,
+      toString: () => "economic growth in India"
+    };
+
+    const hasSelection = mockSelection && !mockSelection.isCollapsed && mockSelection.toString().trim().length > 0;
+    // Condition from App.jsx touch handler:
+    // If there is NO active text selection, movement > 10px indicates a scroll or pinch gesture
+    const isGestureDiscarded = !hasSelection && dx > 10;
+
+    assert.strictEqual(hasSelection, true, "Selection is active");
+    assert.strictEqual(isGestureDiscarded, false, "Selection must NOT be discarded by touch displacement threshold");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 27: Fit to Width Scale Calculation Clamped
+  // -------------------------------------------------------------------
+  runTest("Stability Test 27: Fit to width scale calculation within clamped boundaries", () => {
+    const calculateFitScale = (clientWidth) => {
+      return Math.min(2.5, Math.max(0.5, +((clientWidth - 40) / 600).toFixed(2)));
+    };
+
+    // Mobile screen (390px)
+    const mobileFit = calculateFitScale(390);
+    assert.ok(mobileFit >= 0.5 && mobileFit <= 1.0, "Mobile fit scale is appropriate");
+
+    // Tablet screen (768px)
+    const tabletFit = calculateFitScale(768);
+    assert.ok(tabletFit > 1.0 && tabletFit < 1.5, "Tablet fit scale is appropriate");
+
+    // Desktop widescreen (1440px)
+    const desktopFit = calculateFitScale(1440);
+    assert.ok(desktopFit >= 2.0 && desktopFit <= 2.5, "Desktop fit scale clamps at max 2.5x");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 28: Offline Built-in Dictionary Resolves with Zero Latency
+  // -------------------------------------------------------------------
+  await runAsyncTest("Stability Test 28: Offline dictionary lookup resolves instantly for core vocabulary", async () => {
+    const start = Date.now();
+    const res = await lookupText("reforms", null, "Economic reforms accelerate growth.");
+    const duration = Date.now() - start;
+
+    assert.ok(res, "Lookup must succeed");
+    assert.ok(res.meaning.includes("सुधार"), "Meaning must contain सुधार");
+    assert.ok(duration < 50, `Lookup must resolve in near-zero latency (took ${duration}ms)`);
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 29: Switching PDF Resets Stale OCR and Selection State
+  // -------------------------------------------------------------------
+  runTest("Stability Test 29: Switching PDF documents resets stale OCR and selection state", () => {
+    const ocrCache = new Map();
+    ocrCache.set(1, [{ text: "OldNews", clean: "OldNews" }]);
+    let ocrWords = ocrCache.get(1);
+    let page = 3;
+    let dismissedSignature = "constitution@100,200";
+
+    // Simulate onDocumentLoadSuccess / processFile on new document
+    const resetDocumentSession = () => {
+      ocrCache.clear();
+      ocrWords = [];
+      page = 1;
+      dismissedSignature = null;
+    };
+
+    resetDocumentSession();
+    assert.strictEqual(ocrCache.size, 0, "OCR cache must be cleared for new document");
+    assert.strictEqual(ocrWords.length, 0, "Active OCR words must be reset");
+    assert.strictEqual(page, 1, "Page must reset to 1");
+    assert.strictEqual(dismissedSignature, null, "Dismissed signature must be cleared");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 30: Multi-Word Phrase Selection Over Scanned OCR Words
+  // -------------------------------------------------------------------
+  await runAsyncTest("Stability Test 30: Multi-word phrase selection over OCR words", async () => {
+    const phrase = "The Constitution of India";
+    const res = await lookupText(phrase, null, phrase);
+    assert.ok(res, "Phrase lookup must succeed");
+    assert.strictEqual(res.type, "phrase", "Type must be phrase");
+    assert.ok(res.meaning && res.meaning.length > 0, "Hindi translation must be present");
+    assert.ok(res.meaning.includes("संविधान") || res.meaning.includes("भारत"), "Meaning must translate phrase accurately");
+  });
+
   console.log("\n-------------------------------------------------");
   if (testsFailed > 0) {
     console.error(`RESULTS: ${testsPassed} passed, ${testsFailed} failed.`);

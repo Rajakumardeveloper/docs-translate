@@ -251,6 +251,30 @@ html, body {
   color: var(--primary-blue);
 }
 
+.fit-width-btn {
+  border: 0;
+  background: transparent;
+  color: #4b6388;
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 3px 7px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+  border-left: 1px solid #d1dff2;
+  margin-left: 2px;
+}
+
+.fit-width-btn:hover:not(:disabled) {
+  background: var(--primary-light);
+  color: var(--primary-blue);
+}
+
+.fit-width-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
 .upload-inline {
   display: inline-flex;
   align-items: center;
