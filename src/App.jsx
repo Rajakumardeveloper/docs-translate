@@ -80,6 +80,8 @@ export default function App() {
   const [entry, setEntry] = useState(null);
   const [popupPos, setPopupPos] = useState({ left: 20, top: 120, arrowX: 40, placement: "below" });
   const [activeWordRect, setActiveWordRect] = useState(null);
+  const [activeHighlightBoxes, setActiveHighlightBoxes] = useState([]);
+  const [activeOcrIndex, setActiveOcrIndex] = useState(null);
   const [busy, setBusy] = useState(false);
   const [copied, setCopied] = useState(false);
 
@@ -153,8 +155,13 @@ export default function App() {
     }
     setEntry(null);
     setActiveWordRect(null);
+    setActiveHighlightBoxes([]);
+    setActiveOcrIndex(null);
     setBusy(false);
     setCopied(false);
+    try {
+      window.getSelection()?.removeAllRanges();
+    } catch {}
   }, []);
 
   // Responsive base width debounced to prevent unnecessary PDF re-renders on minor pixel shifts
@@ -296,6 +303,10 @@ export default function App() {
     // Whole-document selections or full-page text dumps (> 35 words or > 300 chars) are NOT phrases.
     const words = text.split(/\s+/).filter(Boolean);
     if (words.length === 0 || words.length > 35 || text.length > 300) {
+      try {
+        window.getSelection()?.removeAllRanges();
+      } catch {}
+      setActiveHighlightBoxes([]);
       return;
     }
 
@@ -335,13 +346,38 @@ export default function App() {
     setPopupPos(pos);
     setCopied(false);
 
-    // On mobile touch devices, clear native browser selection handles once captured
-    // to suppress Android's intrusive system toolbar (Copy / Share / Web search)
-    if (typeof window !== "undefined" && window.innerWidth <= 640) {
+    // Compute relative highlight boxes within pagePaperRef to render sharp, non-intrusive highlight
+    if (pagePaperRef.current && (rect || item?.clientRects)) {
       try {
-        window.getSelection()?.removeAllRanges();
-      } catch {}
+        const paperRect = pagePaperRef.current.getBoundingClientRect();
+        const rawRects = item?.clientRects && item.clientRects.length > 0 ? item.clientRects : (rect ? [rect] : []);
+        const boxes = rawRects
+          .filter(r => r && (r.width > 0 || r.height > 0))
+          .map(r => ({
+            left: Math.max(0, r.left - paperRect.left),
+            top: Math.max(0, r.top - paperRect.top),
+            width: r.width,
+            height: r.height
+          }));
+        setActiveHighlightBoxes(boxes);
+      } catch {
+        setActiveHighlightBoxes([]);
+      }
+    } else {
+      setActiveHighlightBoxes([]);
     }
+
+    if (item && item.ocrIndex != null) {
+      setActiveOcrIndex(item.ocrIndex);
+    } else {
+      setActiveOcrIndex(null);
+    }
+
+    // Clear native browser selection handles once captured to suppress Android's intrusive system toolbar (Copy / Share / Web search)
+    // Custom highlight boxes maintain visible selection highlight seamlessly
+    try {
+      window.getSelection()?.removeAllRanges();
+    } catch {}
 
     const isMultiWord = words.length > 1;
     const initialType = isMultiWord ? (type === "sentence" ? "sentence" : "phrase") : "word";
@@ -894,6 +930,22 @@ export default function App() {
           }
         }
 
+        // If an active text selection was made, process synchronously on touch end
+        // to immediately capture and suppress Android's native ActionMode bar
+        if (hasSelection) {
+          if (touchEndTimerRef.current) {
+            clearTimeout(touchEndTimerRef.current);
+            touchEndTimerRef.current = null;
+          }
+          const targetEl = document.elementFromPoint(touch.clientX, touch.clientY);
+          processSelectionOrClick({
+            clientX: touch.clientX,
+            clientY: touch.clientY,
+            target: targetEl
+          });
+          return;
+        }
+
         if (touchEndTimerRef.current) {
           clearTimeout(touchEndTimerRef.current);
         }
@@ -912,13 +964,27 @@ export default function App() {
       }
     };
 
+    const onContextMenu = (e) => {
+      if (
+        e.target &&
+        (e.target.closest?.(".reader-area") ||
+          e.target.closest?.(".page-paper") ||
+          e.target.closest?.(".textLayer") ||
+          e.target.closest?.(".ocr-overlay"))
+      ) {
+        e.preventDefault();
+      }
+    };
+
     document.addEventListener("touchstart", onTouchStart, { passive: true });
     document.addEventListener("mouseup", onMouseUp);
     document.addEventListener("touchend", onTouchEnd);
+    document.addEventListener("contextmenu", onContextMenu);
     return () => {
       document.removeEventListener("touchstart", onTouchStart);
       document.removeEventListener("mouseup", onMouseUp);
       document.removeEventListener("touchend", onTouchEnd);
+      document.removeEventListener("contextmenu", onContextMenu);
       if (touchEndTimerRef.current) {
         clearTimeout(touchEndTimerRef.current);
       }
@@ -1616,7 +1682,8 @@ export default function App() {
 
       {/* Main Newspaper Reader Area */}
       <main
-        className={`reader-area ${isDragging ? "drag-active" : ""}`}
+        className={`reader-area notranslate ${isDragging ? "drag-active" : ""}`}
+        translate="no"
         ref={readerAreaRef}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
@@ -1698,7 +1765,7 @@ export default function App() {
             </p>
           </div>
         ) : (
-          <div className="pdf-stage">
+          <div className="pdf-stage notranslate" translate="no">
             <Document
               file={file}
               options={pdfOptions}
@@ -1706,7 +1773,7 @@ export default function App() {
               onLoadError={onDocumentLoadError}
               onPassword={handlePassword}
               loading={
-                <div className="pdf-loading-state">
+                <div className="pdf-loading-state notranslate" translate="no">
                   <LoaderCircle size={28} className="spin" />
                   <span>PDF लोड हो रही है… (Loading Newspaper)</span>
                 </div>
@@ -1724,6 +1791,8 @@ export default function App() {
                 ocrWords={ocrWords}
                 showOcrBoxes={showOcrBoxes}
                 activeSelectedText={entry?.text || entry?.word || ""}
+                activeOcrIndex={activeOcrIndex}
+                activeHighlightBoxes={activeHighlightBoxes}
                 pagePaperRef={pagePaperRef}
               />
             </Document>

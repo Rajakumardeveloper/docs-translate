@@ -60,7 +60,8 @@ const PREPOSITIONS = new Set([
 // Common Conjunctions
 const CONJUNCTIONS = new Set([
   "and", "but", "or", "nor", "for", "yet", "so", "although", "because",
-  "since", "unless", "while", "whereas", "whether", "if", "though", "even"
+  "since", "unless", "while", "whereas", "whether", "if", "though", "even",
+  "when", "whenever", "where", "wherever", "until", "till", "as"
 ]);
 
 // Common Interjections
@@ -407,6 +408,28 @@ export const POLYSEMOUS_WORDS = {
       ipa: "/ðə/",
       phonetic: "thuh"
     }
+  },
+  when: {
+    conjunction: {
+      meaning: "जब / जिस समय",
+      alternatives: ["जब", "जिस समय", "उस समय", "जब कि"],
+      contextDistinction: "यहाँ 'when' दो उपवाक्यों को जोड़ने वाला समुच्चयबोधक (Conjunction) है, जिसका अर्थ 'जब / जिस समय' है, न कि प्रश्नवाचक 'कब' (Adverb/Pronoun)।",
+      grammarExplanation: "वाक्य में 'when' एक Subordinating Conjunction (गौण समुच्चयबोधक) है जो समय दर्शाते हुए मुख्य उपवाक्य को आश्रित उपवाक्य से जोड़ता है।",
+      hinglishExplanation: "Yahan 'when' do baaton ko jodne wala Conjunction hai, jiska matlab 'jab / jis waqt' hota hai, sawaal wala 'kab' nahi.",
+      example: "They were walking towards the exit when chaos broke out. — वे निकास की ओर बढ़ रहे थे जब अचानक भगदड़ मच गई।",
+      ipa: "/wen/",
+      phonetic: "WEN"
+    },
+    adverb: {
+      meaning: "कब / किस समय",
+      alternatives: ["कब", "किस समय", "किस वक्त"],
+      contextDistinction: "यहाँ 'when' प्रश्नवाचक या कालवाचक क्रिया-विशेषण (Adverb) है, जिसका अर्थ 'कब' है।",
+      grammarExplanation: "वाक्य में 'when' एक Interrogative Adverb है जो समय के विषय में प्रश्न पूछने के लिए प्रयुक्त हुआ है।",
+      hinglishExplanation: "Yahan 'when' samay poochhne wala word hai, jiska matlab 'kab' hota hai.",
+      example: "When will the ceremony begin? — समारोह कब शुरू होगा?",
+      ipa: "/wen/",
+      phonetic: "WEN"
+    }
   }
 };
 
@@ -496,6 +519,28 @@ export function disambiguatePOS(targetWord, contextSentence) {
       return { pos: PARTS_OF_SPEECH.ADJECTIVE, confidence: 0.92, reason: "Adjective modifying time/reference noun" };
     }
     return { pos: PARTS_OF_SPEECH.PREPOSITION, confidence: 0.95, reason: "Preposition meaning 'after' / 'in the wake of'" };
+  }
+
+  // Special contextual rule for 'when'
+  if (cleanWord === "when") {
+    const isQuestion = cleanSentence.endsWith("?") || (targetIdx === 0 && next1Lower && MODALS_AUX.has(next1Lower));
+    if (isQuestion) {
+      return { pos: PARTS_OF_SPEECH.ADVERB, confidence: 0.95, reason: "Interrogative adverb of time" };
+    }
+    return { pos: PARTS_OF_SPEECH.CONJUNCTION, confidence: 0.95, reason: "Subordinating conjunction of time connecting clauses" };
+  }
+
+  // Special contextual rule for 'state'
+  if (cleanWord === "state") {
+    if (prev1Lower === "to" || MODALS_AUX.has(prev1Lower)) {
+      return { pos: PARTS_OF_SPEECH.VERB, confidence: 0.95, reason: "Infinitive or modal verb 'state'" };
+    }
+    if (next1Lower && ["that", "clearly", "explicitly"].includes(next1Lower)) {
+      return { pos: PARTS_OF_SPEECH.VERB, confidence: 0.92, reason: "Verb 'state' governing clause" };
+    }
+    if (["government", "capital", "police", "laws", "assembly", "level", "borders", "cabinet", "election", "elections", "policy", "officials", "agencies"].includes(next1Lower)) {
+      return { pos: PARTS_OF_SPEECH.NOUN, confidence: 0.95, reason: "Noun 'state' in compound noun phrase" };
+    }
   }
 
   if (PREPOSITIONS.has(cleanWord)) {

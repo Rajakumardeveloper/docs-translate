@@ -382,7 +382,25 @@ export function expandRangeToSelection(range) {
     return null;
   }
 
+  // Reject accidental navigation bar or newspaper section index dumps
+  // (e.g. 8+ consecutive all-caps section titles: "EDITORIAL OPINION LETTERS SPORT BUSINESS...")
+  if (words.length >= 8) {
+    const allCapsCount = words.filter(w => /^[A-Z]{2,}$/.test(w)).length;
+    if (allCapsCount / words.length >= 0.8 && !/[.,!?;:]/.test(normalized)) {
+      return null;
+    }
+  }
+
   const rect = range.getBoundingClientRect ? range.getBoundingClientRect() : { left: 0, top: 0, width: 0, height: 0 };
+  let clientRects = [];
+  try {
+    if (typeof range.getClientRects === "function") {
+      clientRects = Array.from(range.getClientRects()).filter(r => r && (r.width > 0 || r.height > 0));
+    }
+  } catch {}
+  if (clientRects.length === 0 && rect) {
+    clientRects = [rect];
+  }
 
   // Extract clean surrounding sentence from PDF textLayer spans or local context
   const extractedSentence = extractSurroundingSentence(range, normalized);
@@ -488,6 +506,7 @@ export function expandRangeToSelection(range) {
       text: phraseText,
       wordCount: phraseWords.length,
       rect,
+      clientRects,
       sentence: sentence || phraseText,
       region: regionInfo.region,
       fontSize: regionInfo.fontSize,
@@ -535,6 +554,7 @@ export function expandRangeToSelection(range) {
       text: singleClean,
       wordCount: 1,
       rect,
+      clientRects,
       sentence: sentence || "",
       region: regionInfo.region,
       fontSize: regionInfo.fontSize,
@@ -543,6 +563,80 @@ export function expandRangeToSelection(range) {
   }
 
   return null;
+}
+
+// Detect and resolve hyphenated word breaks split across lines in newspaper columns
+// e.g. "poll-bound Utta-" on Line 1 and "rakhand, Uttar Pradesh" on Line 2 -> "Uttarakhand"
+export function resolveHyphenatedWord(span, cleanWord, rawWord, isAtSpanStart, isAtSpanEnd) {
+  if (!span || !cleanWord) return cleanWord;
+  const textLayer = span.closest?.(".textLayer");
+  if (!textLayer || typeof textLayer.querySelectorAll !== "function") return cleanWord;
+
+  try {
+    const allSpans = Array.from(textLayer.querySelectorAll("span"));
+    const spanIdx = allSpans.indexOf(span);
+    if (spanIdx === -1) return cleanWord;
+
+    const spanRect = span.getBoundingClientRect ? span.getBoundingClientRect() : null;
+    if (!spanRect || (spanRect.width === 0 && spanRect.height === 0)) return cleanWord;
+
+    // CASE 1: Word ends with a trailing hyphen (e.g. user tapped "Utta-")
+    // Look forward to find continuation on the next line in this column
+    const hasTrailingHyphen = /-\s*$/.test(rawWord || "") || /-\s*$/.test(span.textContent || "");
+    if (hasTrailingHyphen || isAtSpanEnd) {
+      for (let i = spanIdx + 1; i < Math.min(allSpans.length, spanIdx + 8); i++) {
+        const nextSpan = allSpans[i];
+        const nextRect = nextSpan.getBoundingClientRect ? nextSpan.getBoundingClientRect() : null;
+        if (!nextRect || nextRect.width === 0) continue;
+
+        // Must be on the next line below this span
+        const isBelow = nextRect.top >= spanRect.bottom - 6;
+        const isNearLine = nextRect.top - spanRect.bottom <= Math.max(30, spanRect.height * 2.5);
+        // Column alignment: must be in the same column
+        const inSameCol = Math.abs(nextRect.left - spanRect.left) < 220 && (nextRect.left <= spanRect.right + 40);
+
+        if (isBelow && isNearLine && inSameCol) {
+          const nextText = (nextSpan.textContent || "").trim();
+          const match = nextText.match(/^([A-Za-z]+)/);
+          if (match && match[1]) {
+            const stem = cleanWord.replace(/-+$/, "");
+            return stem + match[1];
+          }
+          break;
+        }
+      }
+    }
+
+    // CASE 2: Word is at the start of a line (e.g. user tapped "rakhand")
+    // Look backward to check if previous line ended with a hyphenated stem (e.g. "Utta-")
+    if (isAtSpanStart) {
+      for (let i = spanIdx - 1; i >= Math.max(0, spanIdx - 8); i--) {
+        const prevSpan = allSpans[i];
+        const prevRect = prevSpan.getBoundingClientRect ? prevSpan.getBoundingClientRect() : null;
+        if (!prevRect || prevRect.width === 0) continue;
+
+        // Must be on the line above this span
+        const isAbove = prevRect.bottom <= spanRect.top + 6;
+        const isNearLine = spanRect.top - prevRect.bottom <= Math.max(30, spanRect.height * 2.5);
+        // Column alignment: must be in the same column
+        const inSameCol = Math.abs(prevRect.left - spanRect.left) < 220 && (prevRect.right >= spanRect.left - 40);
+
+        if (isAbove && isNearLine && inSameCol) {
+          const prevText = (prevSpan.textContent || "").trim();
+          const match = prevText.match(/([A-Za-z]+)-\s*$/);
+          if (match && match[1]) {
+            const prefixStem = match[1];
+            return prefixStem + cleanWord;
+          }
+          break;
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("Hyphenation resolution fallback:", err);
+  }
+
+  return cleanWord;
 }
 
 // Extract the exact word at a click or tap point in the PDF text layer
@@ -678,10 +772,14 @@ export function extractWordAtPoint(clientX, clientY, target) {
   }
 
   const rawFullWord = prefix + localWord + suffix;
-  const cleanWord = cleanSingleWord(rawFullWord);
+  let cleanWord = cleanSingleWord(rawFullWord);
   if (!cleanWord || !/[A-Za-z]/.test(cleanWord) || (cleanWord.length < 2 && !["a", "i", "A", "I"].includes(cleanWord))) {
     return null;
   }
+
+  const isAtSpanStart = start === 0 && !prefix;
+  const isAtSpanEnd = end === text.length && !suffix;
+  cleanWord = resolveHyphenatedWord(span, cleanWord, rawFullWord, isAtSpanStart, isAtSpanEnd);
 
   let rect = span.getBoundingClientRect ? span.getBoundingClientRect() : { left: 0, top: 0, width: 60, height: 20 };
   try {
@@ -718,6 +816,7 @@ export function extractWordAtPoint(clientX, clientY, target) {
     text: cleanWord,
     wordCount: 1,
     rect,
+    clientRects: [rect],
     sentence: sentence || "",
     region: regionInfo.region,
     fontSize: regionInfo.fontSize,

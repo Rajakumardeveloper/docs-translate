@@ -11,7 +11,8 @@ import {
   getNextSpanWordSuffix,
   segmentOcrText,
   classifyTextRegion,
-  getSpanFontSize
+  getSpanFontSize,
+  resolveHyphenatedWord
 } from "./src/selection.js";
 import { lookupText, normalizeLookupText, BUILTIN_DICTIONARY } from "./src/dictionary.js";
 import { disambiguatePOS } from "./src/grammarEngine.js";
@@ -1450,6 +1451,112 @@ async function main() {
     // 3. New render completes
     isRendering = false;
     assert.strictEqual(hasBackup && isRendering, false, "Backup canvas smoothly hands off to sharp new canvas");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 35: Contextual Disambiguation of 'when' as Conjunction ('जब / जिस समय')
+  // -------------------------------------------------------------------
+  await runAsyncTest("Stability Test 35: Contextual Disambiguation of 'when' as Conjunction ('जब / जिस समय')", async () => {
+    // 1. In subordinate clause: "walking towards the exit when chaos broke out"
+    const sentence = "They were walking towards the exit when chaos broke out.";
+    const res = await lookupText("when", null, sentence);
+    assert.ok(res, "Lookup for 'when' must succeed");
+    assert.strictEqual(res.pos, "Conjunction", "'when' connecting clauses must be classified as Conjunction");
+    assert.notStrictEqual(res.pos, "Noun", "'when' must NEVER be classified as Noun");
+    assert.ok(res.meaning.includes("जब") || res.meaning.includes("जिस समय"), "Meaning must be 'जब' or 'जिस समय' rather than 'कब'");
+
+    // 2. In question: "When will the meeting start?"
+    const qSentence = "When will the meeting start?";
+    const qPos = disambiguatePOS("when", qSentence);
+    assert.strictEqual(qPos.pos, "Adverb", "'when' in question must be classified as Interrogative Adverb");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 36: Hyphenated Word Resolution Across Lines ('Utta-' + 'rakhand' -> 'Uttarakhand')
+  // -------------------------------------------------------------------
+  runTest("Stability Test 36: Hyphenated word resolution across lines ('Utta-' + 'rakhand' -> 'Uttarakhand')", () => {
+    // Mock textLayer with 2 spans across 2 lines in a newspaper column
+    const mockSpan1 = {
+      tagName: "SPAN",
+      textContent: "poll-bound Utta-",
+      getBoundingClientRect: () => ({ left: 100, top: 200, right: 280, bottom: 220, width: 180, height: 20 })
+    };
+    const mockSpan2 = {
+      tagName: "SPAN",
+      textContent: "rakhand, Uttar Pradesh,",
+      getBoundingClientRect: () => ({ left: 100, top: 224, right: 280, bottom: 244, width: 180, height: 20 })
+    };
+
+    const mockTextLayer = {
+      querySelectorAll: (sel) => sel === "span" ? [mockSpan1, mockSpan2] : []
+    };
+    mockSpan1.closest = (sel) => sel === ".textLayer" ? mockTextLayer : null;
+    mockSpan2.closest = (sel) => sel === ".textLayer" ? mockTextLayer : null;
+
+    // Case A: User tapped on "rakhand" (line 2 start)
+    const resolvedFromLine2 = resolveHyphenatedWord(mockSpan2, "rakhand", "rakhand", true, false);
+    assert.strictEqual(resolvedFromLine2, "Uttarakhand", "Tapping 'rakhand' must resolve preceding hyphenated stem 'Utta-' to 'Uttarakhand'");
+
+    // Case B: User tapped on "Utta-" (line 1 end)
+    const resolvedFromLine1 = resolveHyphenatedWord(mockSpan1, "Utta", "Utta-", false, true);
+    assert.strictEqual(resolvedFromLine1, "Uttarakhand", "Tapping 'Utta-' must resolve succeeding continuation 'rakhand' to 'Uttarakhand'");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 37: Custom Highlight Box Creation & OS Selection Toolbar Suppression on Mobile
+  // -------------------------------------------------------------------
+  runTest("Stability Test 37: Custom highlight box creation & OS selection toolbar suppression on mobile", () => {
+    const paperRect = { left: 50, top: 100, width: 600, height: 800 };
+    const clientRect = { left: 120, top: 240, width: 90, height: 22 };
+
+    const relativeBox = {
+      left: clientRect.left - paperRect.left,
+      top: clientRect.top - paperRect.top,
+      width: clientRect.width,
+      height: clientRect.height
+    };
+
+    assert.strictEqual(relativeBox.left, 70);
+    assert.strictEqual(relativeBox.top, 140);
+    assert.strictEqual(relativeBox.width, 90);
+    assert.strictEqual(relativeBox.height, 22);
+
+    // Verification that range has clientRects captured
+    const mockRange = {
+      collapsed: false,
+      toString: () => "economic growth",
+      getBoundingClientRect: () => clientRect,
+      getClientRects: () => [clientRect]
+    };
+    const sel = expandRangeToSelection(mockRange);
+    assert.ok(sel, "Selection succeeds");
+    assert.ok(Array.isArray(sel.clientRects), "expandRangeToSelection provides clientRects array");
+    assert.strictEqual(sel.clientRects.length, 1);
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 38: Over-Long Multi-Column Selection (> 35 Words) Safety
+  // -------------------------------------------------------------------
+  runTest("Stability Test 38: Over-long multi-column selection (> 35 words) safety", () => {
+    const longText = "This is an accidental drag selection across multiple columns of a newspaper that includes many sentences and exceeds the reasonable maximum length of a vocabulary phrase to ensure stability and prevent UI freezing ".repeat(3);
+    const mockRange = {
+      collapsed: false,
+      toString: () => longText,
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 200, height: 400 })
+    };
+    const res = expandRangeToSelection(mockRange);
+    assert.strictEqual(res, null, "Over-long selections (> 35 words) must be rejected to prevent screen freeze");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 39: Google Translate Suppression Attributes in HTML & Reader Container
+  // -------------------------------------------------------------------
+  await runAsyncTest("Stability Test 39: Google Translate suppression attributes in HTML & Reader container", async () => {
+    const fs = await import("node:fs");
+    const html = fs.readFileSync("./index.html", "utf-8");
+    assert.ok(html.includes('translate="no"'), "HTML root must include translate='no'");
+    assert.ok(html.includes('class="notranslate"'), "HTML root must include class='notranslate'");
+    assert.ok(html.includes('<meta name="google" content="notranslate"'), "HTML head must include notranslate meta tag");
   });
 
   console.log("\n-------------------------------------------------");

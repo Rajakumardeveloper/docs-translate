@@ -53,6 +53,27 @@ export const BUILTIN_DICTIONARY = {
     alternatives: ["के बाद", "के फलस्वरूप", "के उपरांत", "के मद्देनज़र"],
     sentence: "Following protests against the decision, officials announced a delay. — फ़ैसले के ख़िलाफ़ प्रदर्शनों के बाद, अधिकारियों ने देरी की घोषणा की।"
   },
+  when: {
+    word: "when",
+    ipa: "/wen/",
+    meaning: "जब / जिस समय",
+    alternatives: ["जब", "जिस समय", "उस समय", "कब", "जब कि"],
+    sentence: "They were walking towards the exit when chaos broke out. — वे निकास की ओर बढ़ रहे थे जब अचानक भगदड़ मच गई।"
+  },
+  uttarakhand: {
+    word: "Uttarakhand",
+    ipa: "/ˌʊt.ər.ɑːˈkʌnd/",
+    meaning: "उत्तराखंड (भारतीय राज्य)",
+    alternatives: ["उत्तराखंड", "उत्तरांचल"],
+    sentence: "Special summary revision was announced for Uttarakhand and Punjab. — उत्तराखंड और पंजाब के लिए विशेष संक्षिप्त पुनरीक्षण की घोषणा की गई।"
+  },
+  uttar: {
+    word: "Uttar",
+    ipa: "/ˈʊt.ər/",
+    meaning: "उत्तर (दिशा या उत्तर प्रदेश का भाग)",
+    alternatives: ["उत्तर", "उत्तरी"],
+    sentence: "Uttar Pradesh announced summary revisions. — उत्तर प्रदेश ने संक्षिप्त पुनरीक्षण की घोषणा की।"
+  },
   economy: {
     word: "economy",
     ipa: "/ɪˈkɑː.nə.mi/",

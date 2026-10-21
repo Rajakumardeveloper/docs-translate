@@ -794,6 +794,7 @@ html, body {
   pointer-events: auto !important;
   user-select: text !important;
   -webkit-user-select: text !important;
+  -webkit-touch-callout: none !important;
 }
 
 .textLayer :is(span, br) {
@@ -894,6 +895,7 @@ html, body {
   height: 100%;
   pointer-events: auto;
   z-index: 4;
+  -webkit-touch-callout: none !important;
 }
 
 .ocr-word-span {
@@ -901,6 +903,7 @@ html, body {
   color: transparent !important;
   user-select: text !important;
   -webkit-user-select: text !important;
+  -webkit-touch-callout: none !important;
   cursor: text;
   line-height: 1;
   border: 1px solid transparent;
@@ -923,6 +926,27 @@ html, body {
 .ocr-overlay ::selection {
   background: rgba(35, 129, 246, 0.35) !important;
   color: transparent !important;
+}
+
+/* Custom Selection Highlight Layer (Suppresses intrusive mobile OS toolbars) */
+.custom-selection-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 2;
+  -webkit-touch-callout: none !important;
+}
+
+.reader-selection-highlight-box {
+  position: absolute;
+  background: rgba(35, 129, 246, 0.28);
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px rgba(35, 129, 246, 0.5);
+  pointer-events: none;
+  transition: opacity 0.1s ease;
 }
 
 /* OCR Action Bar */

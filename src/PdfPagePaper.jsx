@@ -25,6 +25,8 @@ function PdfPagePaperImpl({
   ocrWords,
   showOcrBoxes,
   activeSelectedText,
+  activeOcrIndex,
+  activeHighlightBoxes,
   pagePaperRef
 }) {
   const backupCanvasRef = useRef(null);
@@ -35,6 +37,10 @@ function PdfPagePaperImpl({
   useEffect(() => {
     if (hasBackup) {
       setIsRendering(true);
+      const timer = setTimeout(() => {
+        setIsRendering(false);
+      }, 1500);
+      return () => clearTimeout(timer);
     }
   }, [scale, pageNumber, baseWidth, hasBackup]);
 
@@ -134,17 +140,54 @@ function PdfPagePaperImpl({
         </div>
       )}
 
+      {/* Custom Clean Selection Highlight Boxes (replaces intrusive OS selection handles) */}
+      {activeHighlightBoxes && activeHighlightBoxes.length > 0 && (
+        <div
+          className="custom-selection-layer notranslate"
+          translate="no"
+          aria-hidden="true"
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            width: "100%",
+            height: "100%",
+            pointerEvents: "none",
+            zIndex: 2
+          }}
+        >
+          {activeHighlightBoxes.map((box, idx) => (
+            <div
+              key={idx}
+              className="reader-selection-highlight-box"
+              style={{
+                position: "absolute",
+                left: `${box.left}px`,
+                top: `${box.top}px`,
+                width: `${box.width}px`,
+                height: `${box.height}px`,
+                backgroundColor: "rgba(35, 129, 246, 0.28)",
+                borderRadius: "2px",
+                pointerEvents: "none"
+              }}
+            />
+          ))}
+        </div>
+      )}
+
       {/* Scanned PDF interactive transparent selectable OCR layer */}
       {isScannedPage && ocrWords.length > 0 && showOcrBoxes && (
-        <div className="ocr-overlay" aria-label="Interactive OCR selectable words">
+        <div className="ocr-overlay notranslate" translate="no" aria-label="Interactive OCR selectable words">
           {ocrWords.map((item, idx) => {
             const leftPct = (item.relBox.x0 * 100).toFixed(3);
             const topPct = (item.relBox.y0 * 100).toFixed(3);
             const widthPct = Math.max(0.1, (item.relBox.x1 - item.relBox.x0) * 100).toFixed(3);
             const heightPct = Math.max(0.1, (item.relBox.y1 - item.relBox.y0) * 100).toFixed(3);
-            const isActive = activeSelectedText
-              ? item.clean?.toLowerCase() === activeSelectedText.toLowerCase()
-              : false;
+            const isActive = activeOcrIndex != null
+              ? idx === activeOcrIndex
+              : (activeSelectedText && activeSelectedText.length > 3
+                  ? item.clean?.toLowerCase() === activeSelectedText.toLowerCase()
+                  : false);
 
             return (
               <span
@@ -182,6 +225,8 @@ export const PdfPagePaper = React.memo(PdfPagePaperImpl, (prev, next) => {
     prev.ocrProgress === next.ocrProgress &&
     prev.showOcrBoxes === next.showOcrBoxes &&
     prev.activeSelectedText === next.activeSelectedText &&
+    prev.activeOcrIndex === next.activeOcrIndex &&
+    prev.activeHighlightBoxes === next.activeHighlightBoxes &&
     prev.ocrWords === next.ocrWords
   );
 });
