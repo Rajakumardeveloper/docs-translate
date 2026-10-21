@@ -27,6 +27,7 @@ import {
   RotateCcw
 } from "lucide-react";
 import { createWorker } from "tesseract.js";
+import { getPublicAssetUrl } from "./assetHelper.js";
 import { lookupText, normalizeLookupText } from "./dictionary.js";
 import {
   cleanSingleWord,
@@ -135,6 +136,23 @@ export default function App() {
   const panRafRef = useRef(null);
   const selectionSettlingTimerRef = useRef(null);
 
+  // Background OCR Pipeline Refs (Phase 3 & 4)
+  const activeOcrPageRef = useRef(null);
+  const ocrAbortTokenRef = useRef(0);
+
+  // Safely close active dictionary/translation popup and abort any in-flight requests
+  // Defined early so all hooks, effects, and handlers have access without TDZ
+  const closePopup = useCallback(() => {
+    requestIdRef.current++;
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setEntry(null);
+    setActiveWordRect(null);
+    setBusy(false);
+  }, []);
+
   // Responsive base width debounced to prevent unnecessary PDF re-renders on minor pixel shifts
   const [baseWidth, setBaseWidth] = useState(() =>
     typeof window !== "undefined" ? Math.min(window.innerWidth - 24, 920) : 800
@@ -156,102 +174,14 @@ export default function App() {
     };
   }, []);
 
-  // Desktop Ctrl/Cmd + Wheel Zoom with focal-point preservation
-  useEffect(() => {
-    const reader = readerAreaRef.current;
-    if (!reader) return;
-
-    const onWheel = (e) => {
-      if (e.ctrlKey || e.metaKey) {
-        e.preventDefault();
-        const factor = e.deltaY < 0 ? 1.15 : 0.87;
-        const newScale = Math.min(3.0, Math.max(0.5, +(scale * factor).toFixed(2)));
-        if (Math.abs(newScale - scale) > 0.02) {
-          const rect = reader.getBoundingClientRect();
-          const mouseX = e.clientX - rect.left;
-          const mouseY = e.clientY - rect.top;
-          const focalX = reader.scrollLeft + mouseX;
-          const focalY = reader.scrollTop + mouseY;
-          const ratio = newScale / scale;
-
-          pendingScrollRef.current = {
-            left: Math.max(0, focalX * ratio - mouseX),
-            top: Math.max(0, focalY * ratio - mouseY)
-          };
-
-          closePopup();
-          setScale(newScale);
-        }
-      }
-    };
-
-    reader.addEventListener("wheel", onWheel, { passive: false });
-    return () => {
-      reader.removeEventListener("wheel", onWheel);
-    };
-  }, [scale, closePopup]);
-
-  // Apply focal-point preserving scroll offset after scale change
-  useEffect(() => {
-    if (pendingScrollRef.current && readerAreaRef.current) {
-      const { left, top } = pendingScrollRef.current;
-      pendingScrollRef.current = null;
-      if (readerAreaRef.current) {
-        readerAreaRef.current.scrollLeft = left;
-        readerAreaRef.current.scrollTop = top;
-      }
-      requestAnimationFrame(() => {
-        if (readerAreaRef.current) {
-          readerAreaRef.current.scrollLeft = left;
-          readerAreaRef.current.scrollTop = top;
-        }
-      });
-    }
-  }, [scale]);
-
-  // Non-passive native touchmove listener for two-finger pinch zoom
-  useEffect(() => {
-    const el = readerAreaRef.current;
-    if (!el) return;
-    const onTouchMoveNative = (e) => {
-      if (e.touches && e.touches.length === 2) {
-        handleReaderTouchMove(e);
-      }
-    };
-    el.addEventListener("touchmove", onTouchMoveNative, { passive: false });
-    return () => {
-      el.removeEventListener("touchmove", onTouchMoveNative);
-    };
-  }, []);
-
-  // Background OCR Pipeline Refs (Phase 3 & 4)
-  const activeOcrPageRef = useRef(null);
-  const ocrAbortTokenRef = useRef(0);
-
   // PDF.js options to support diverse newspaper encodings, CMaps, and standard fonts
   const pdfOptions = useMemo(() => {
-    let pathname = typeof window !== "undefined" ? window.location.pathname : "/";
-    if (!pathname.endsWith("/")) pathname += "/";
-    const base = typeof window !== "undefined" ? window.location.origin + pathname : "/";
-
     return {
-      cMapUrl: new URL("cmaps/", base).href,
+      cMapUrl: getPublicAssetUrl("cmaps/"),
       cMapPacked: true,
-      standardFontDataUrl: new URL("standard_fonts/", base).href,
+      standardFontDataUrl: getPublicAssetUrl("standard_fonts/"),
       enableXfa: true
     };
-  }, []);
-
-  // Safely close active dictionary/translation popup and abort any in-flight requests
-  const closePopup = useCallback(() => {
-    requestIdRef.current++;
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
-    }
-    setEntry(null);
-    setActiveWordRect(null);
-    setBusy(false);
   }, []);
 
   // Explicit dismissal handler for (X) button: marks selection dismissed so it does not immediately reopen
@@ -568,7 +498,7 @@ export default function App() {
         setOcrProgress(20);
         setNotice(`पेज ${targetPage}: इमेज प्री-प्रोसेसिंग पूर्ण (20%)…`);
 
-        let langBase = typeof window !== "undefined" ? window.location.origin + (window.location.pathname.endsWith("/") ? window.location.pathname : window.location.pathname + "/") : "/";
+        let langBase = getPublicAssetUrl("");
         const workerLogger = (m) => {
           if (ocrAbortTokenRef.current !== currentOcrToken) return;
           let prog = 25;
@@ -1137,6 +1067,74 @@ export default function App() {
     }
   };
 
+  // Desktop Ctrl/Cmd + Wheel Zoom with focal-point preservation
+  useEffect(() => {
+    const reader = readerAreaRef.current;
+    if (!reader) return;
+
+    const onWheel = (e) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        const factor = e.deltaY < 0 ? 1.15 : 0.87;
+        const newScale = Math.min(3.0, Math.max(0.5, +(scale * factor).toFixed(2)));
+        if (Math.abs(newScale - scale) > 0.02) {
+          const rect = reader.getBoundingClientRect();
+          const mouseX = e.clientX - rect.left;
+          const mouseY = e.clientY - rect.top;
+          const focalX = reader.scrollLeft + mouseX;
+          const focalY = reader.scrollTop + mouseY;
+          const ratio = newScale / scale;
+
+          pendingScrollRef.current = {
+            left: Math.max(0, focalX * ratio - mouseX),
+            top: Math.max(0, focalY * ratio - mouseY)
+          };
+
+          closePopup();
+          setScale(newScale);
+        }
+      }
+    };
+
+    reader.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      reader.removeEventListener("wheel", onWheel);
+    };
+  }, [scale, closePopup]);
+
+  // Apply focal-point preserving scroll offset after scale change
+  useEffect(() => {
+    if (pendingScrollRef.current && readerAreaRef.current) {
+      const { left, top } = pendingScrollRef.current;
+      pendingScrollRef.current = null;
+      if (readerAreaRef.current) {
+        readerAreaRef.current.scrollLeft = left;
+        readerAreaRef.current.scrollTop = top;
+      }
+      requestAnimationFrame(() => {
+        if (readerAreaRef.current) {
+          readerAreaRef.current.scrollLeft = left;
+          readerAreaRef.current.scrollTop = top;
+        }
+      });
+    }
+  }, [scale]);
+
+  // Non-passive native touchmove listener for two-finger pinch zoom
+  useEffect(() => {
+    const el = readerAreaRef.current;
+    if (!el) return;
+    const onTouchMoveNative = (e) => {
+      if (e.touches && e.touches.length === 2) {
+        handleReaderTouchMove(e);
+      }
+    };
+    el.addEventListener("touchmove", onTouchMoveNative, { passive: false });
+    return () => {
+      el.removeEventListener("touchmove", onTouchMoveNative);
+    };
+  }, []);
+
   // Safe page navigation (ensures any open popups or pending requests close)
   const goToPage = (p) => {
     const target = Math.max(1, Math.min(p, numPages || 1));
@@ -1228,12 +1226,7 @@ export default function App() {
       setPageJumpInput("1");
       setNotice("नमूना अख़बार लोड हो रहा है… (Loading Sample Newspaper)");
 
-      let sampleUrl = "sample-newspaper.pdf";
-      if (typeof window !== "undefined" && window.location) {
-        let base = window.location.origin + window.location.pathname;
-        if (!base.endsWith("/")) base += "/";
-        sampleUrl = `${base}sample-newspaper.pdf`;
-      }
+      let sampleUrl = getPublicAssetUrl("sample-newspaper.pdf");
 
       const res = await fetch(sampleUrl);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
