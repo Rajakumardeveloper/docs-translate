@@ -24,7 +24,9 @@ import {
   ChevronDown,
   ChevronUp,
   AlertCircle,
-  RotateCcw
+  RotateCcw,
+  Copy,
+  Check
 } from "lucide-react";
 import { createWorker } from "tesseract.js";
 import { getPublicAssetUrl } from "./assetHelper.js";
@@ -79,6 +81,7 @@ export default function App() {
   const [popupPos, setPopupPos] = useState({ left: 20, top: 120, arrowX: 40, placement: "below" });
   const [activeWordRect, setActiveWordRect] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   // Search state
   const [showSearch, setShowSearch] = useState(false);
@@ -151,6 +154,7 @@ export default function App() {
     setEntry(null);
     setActiveWordRect(null);
     setBusy(false);
+    setCopied(false);
   }, []);
 
   // Responsive base width debounced to prevent unnecessary PDF re-renders on minor pixel shifts
@@ -205,6 +209,18 @@ export default function App() {
       window.getSelection()?.removeAllRanges();
     } catch {}
   }, [entry, activeWordRect, closePopup]);
+
+  // One-tap copy handler for student vocabulary and translations
+  const handleCopy = useCallback((e) => {
+    e?.stopPropagation?.();
+    e?.preventDefault?.();
+    const txt = entry?.text || entry?.word || "";
+    if (txt && typeof navigator !== "undefined" && navigator?.clipboard?.writeText) {
+      navigator.clipboard.writeText(txt).catch(() => {});
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }
+  }, [entry]);
 
   // Reset states on new file
   const onDocumentLoadSuccess = (doc) => {
@@ -317,6 +333,15 @@ export default function App() {
     setActiveWordRect(rect);
     const pos = calculatePopupPosition(rect, 320, 160);
     setPopupPos(pos);
+    setCopied(false);
+
+    // On mobile touch devices, clear native browser selection handles once captured
+    // to suppress Android's intrusive system toolbar (Copy / Share / Web search)
+    if (typeof window !== "undefined" && window.innerWidth <= 640) {
+      try {
+        window.getSelection()?.removeAllRanges();
+      } catch {}
+    }
 
     const isMultiWord = words.length > 1;
     const initialType = isMultiWord ? (type === "sentence" ? "sentence" : "phrase") : "word";
@@ -1770,29 +1795,41 @@ export default function App() {
               </span>
             )}
 
-            <button
-              className="close-btn"
-              type="button"
-              onClick={handleDismiss}
-              onPointerDown={(e) => {
-                e.stopPropagation();
-                e.preventDefault();
-              }}
-              onTouchStart={(e) => {
-                touchInsidePopupRef.current = true;
-                e.stopPropagation();
-              }}
-              onTouchEnd={(e) => {
-                e.stopPropagation();
-                e.preventDefault();
-                handleDismiss(e);
-              }}
-              onMouseDown={(e) => e.stopPropagation()}
-              aria-label="Close"
-              title="Close (✕)"
-            >
-              <X size={18} />
-            </button>
+            <div className="popup-actions-group">
+              <button
+                className={`copy-text-btn ${copied ? "copied" : ""}`}
+                type="button"
+                onClick={handleCopy}
+                aria-label="कॉपी करें (Copy)"
+                title={copied ? "कॉपी हो गया! (Copied)" : "कॉपी करें (Copy)"}
+              >
+                {copied ? <Check size={16} /> : <Copy size={16} />}
+              </button>
+
+              <button
+                className="close-btn"
+                type="button"
+                onClick={handleDismiss}
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                }}
+                onTouchStart={(e) => {
+                  touchInsidePopupRef.current = true;
+                  e.stopPropagation();
+                }}
+                onTouchEnd={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  handleDismiss(e);
+                }}
+                onMouseDown={(e) => e.stopPropagation()}
+                aria-label="Close"
+                title="Close (✕)"
+              >
+                <X size={18} />
+              </button>
+            </div>
           </div>
 
           {/* Exact selected word with original capitalization */}

@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Page } from "react-pdf";
 import { LoaderCircle } from "lucide-react";
 
@@ -31,10 +31,16 @@ function PdfPagePaperImpl({
   const [hasBackup, setHasBackup] = useState(false);
   const [isRendering, setIsRendering] = useState(false);
 
+  // When scale, page, or width changes, activate backup canvas overlay until replacement render completes
+  useEffect(() => {
+    if (hasBackup) {
+      setIsRendering(true);
+    }
+  }, [scale, pageNumber, baseWidth, hasBackup]);
+
   // When a new render finishes, copy canvas to backup buffer
   const handleRenderSuccess = useCallback(
     (pageObj) => {
-      setIsRendering(false);
       try {
         const src = pdfCanvasRef?.current;
         const backup = backupCanvasRef?.current;
@@ -50,12 +56,22 @@ function PdfPagePaperImpl({
       } catch (e) {
         console.warn("Canvas double-buffering sync warning:", e);
       }
+      setIsRendering(false);
       if (onPageRenderSuccess) {
         onPageRenderSuccess(pageObj);
       }
     },
     [pdfCanvasRef, onPageRenderSuccess]
   );
+
+  // Safely absorb obsolete render task cancellations when rapid zoom supersedes them
+  const handleRenderError = useCallback((err) => {
+    if (err?.name === "RenderingCancelledException") {
+      return; // Benign cancellation: newer render already initiated
+    }
+    console.warn("PDF Page render error:", err);
+    setIsRendering(false);
+  }, []);
 
   return (
     <div className="page-paper" ref={pagePaperRef}>
@@ -84,6 +100,7 @@ function PdfPagePaperImpl({
         renderAnnotationLayer={true}
         canvasRef={pdfCanvasRef}
         onRenderSuccess={handleRenderSuccess}
+        onRenderError={handleRenderError}
         onRenderTextLayerSuccess={onTextLayerRenderSuccess}
         loading={
           <div className="page-loading-state" style={{ opacity: hasBackup ? 0 : 1 }}>

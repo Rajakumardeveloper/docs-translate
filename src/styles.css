@@ -1128,6 +1128,42 @@ html, body {
   border: 1px solid #d4e0f0;
 }
 
+.pos-article {
+  background: #ede9fe;
+  color: #6d28d9;
+  border: 1px solid #ddd6fe;
+}
+
+.popup-actions-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.copy-text-btn {
+  border: 0;
+  background: transparent;
+  color: #6a7c98;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  padding: 0;
+}
+
+.copy-text-btn:hover {
+  background: #edf3fb;
+  color: #0b1836;
+}
+
+.copy-text-btn.copied {
+  color: #16a34a;
+}
+
 /* Close (✕) Button */
 .close-btn {
   border: 0;

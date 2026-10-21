@@ -427,6 +427,46 @@ export function expandRangeToSelection(range) {
 
         const endIsTextNode = range.endContainer?.nodeType === (typeof Node !== "undefined" ? Node.TEXT_NODE : 3);
         const endSpan = endIsTextNode ? range.endContainer.parentElement : range.endContainer;
+
+        // Check if multi-word drag crossed an adjacent newspaper column
+        if (startSpan && endSpan && startSpan !== endSpan) {
+          const rStart = startSpan.getBoundingClientRect ? startSpan.getBoundingClientRect() : null;
+          const rEnd = endSpan.getBoundingClientRect ? endSpan.getBoundingClientRect() : null;
+          if (rStart && rEnd && rStart.width > 0 && rEnd.width > 0) {
+            const horizontalGap = rEnd.left > rStart.right + 25 || rStart.left > rEnd.right + 25;
+            const verticalDisplacement = Math.abs(rEnd.top - rStart.top) > 10;
+            if (horizontalGap && verticalDisplacement) {
+              // The selection crosses a newspaper column gutter: clamp to primary column
+              const textLayer = startSpan.closest?.(".textLayer");
+              if (textLayer && typeof textLayer.querySelectorAll === "function") {
+                const allSpans = Array.from(textLayer.querySelectorAll("span"));
+                const startIdx = allSpans.indexOf(startSpan);
+                if (startIdx !== -1) {
+                  let colText = "";
+                  for (let i = startIdx; i < allSpans.length; i++) {
+                    const sp = allSpans[i];
+                    const r = sp.getBoundingClientRect ? sp.getBoundingClientRect() : null;
+                    if (r && r.width > 0) {
+                      const inAnotherCol = r.left > rStart.right + 25 || rStart.left > r.right + 25;
+                      if (inAnotherCol && Math.abs(r.top - rStart.top) > 10) {
+                        break;
+                      }
+                    }
+                    const t = (sp.textContent || "").trim();
+                    if (t) {
+                      colText += (colText ? " " : "") + t;
+                    }
+                    if (sp === endSpan) break;
+                  }
+                  if (colText && colText.trim().length > 0) {
+                    phraseText = normalizeSelectionText(colText);
+                  }
+                }
+              }
+            }
+          }
+        }
+
         const textInEndSpan = endSpan?.textContent || "";
         const endOff = typeof range.endOffset === "number" ? range.endOffset : textInEndSpan.length;
         const trailingText = textInEndSpan.slice(endOff);

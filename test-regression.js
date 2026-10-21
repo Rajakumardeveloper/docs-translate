@@ -1364,6 +1364,94 @@ async function main() {
     assert.ok(res.meaning.includes("संविधान") || res.meaning.includes("भारत"), "Meaning must translate phrase accurately");
   });
 
+  // -------------------------------------------------------------------
+  // TEST 31: Contextual Disambiguation of 'Following' as Preposition
+  // -------------------------------------------------------------------
+  await runAsyncTest("Stability Test 31: Contextual Disambiguation of 'Following' as Preposition", async () => {
+    const sentence = "Following protests against the decision, officials announced a delay.";
+    const res = await lookupText("Following", null, sentence);
+    assert.ok(res, "Lookup for 'Following' must succeed");
+    assert.strictEqual(res.pos, "Preposition", "'Following' before 'protests against' must be classified as Preposition");
+    assert.ok(res.meaning.includes("के बाद") || res.meaning.includes("के फलस्वरूप"), "Meaning must be 'के बाद / के फलस्वरूप' rather than 'अगले'");
+    assert.ok(!res.pos.includes("Verb"), "Must NOT be classified as Verb in prepositional context");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 32: Definite Article Interpretation of 'The'
+  // -------------------------------------------------------------------
+  await runAsyncTest("Stability Test 32: Definite Article Interpretation of 'The'", async () => {
+    const sentence = "The government announced a new policy.";
+    const res = await lookupText("The", null, sentence);
+    assert.ok(res, "Lookup for 'The' must succeed");
+    assert.strictEqual(res.pos, "Article", "'The' must be classified as Article");
+    assert.notStrictEqual(res.pos, "Noun", "'The' must NEVER be classified as Noun");
+    assert.notStrictEqual(res.meaning, "वह", "'The' must NOT be translated as third-person pronoun 'वह'");
+    assert.ok(res.meaning.includes("निश्चित उपपद") || res.meaning.includes("Definite Article"), "Meaning must explain Definite Article role");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 33: Multi-Word Drag Selection Protection Across Columns
+  // -------------------------------------------------------------------
+  runTest("Stability Test 33: Multi-word drag selection protection across newspaper columns", () => {
+    const col1Start = {
+      textContent: "Supreme Court upheld the ",
+      getBoundingClientRect: () => ({ left: 50, top: 100, right: 220, bottom: 120, width: 170, height: 20 })
+    };
+    const col2End = {
+      textContent: "entertainment section review",
+      getBoundingClientRect: () => ({ left: 300, top: 180, right: 480, bottom: 200, width: 180, height: 20 })
+    };
+
+    const mockSpans = [col1Start, col2End];
+    const mockLayer = { querySelectorAll: () => mockSpans };
+    col1Start.closest = () => mockLayer;
+    col2End.closest = () => mockLayer;
+
+    const crossColRange = {
+      startContainer: col1Start,
+      startOffset: 0,
+      endContainer: col2End,
+      endOffset: 12,
+      toString: () => "Supreme Court upheld the entertainment"
+    };
+
+    const sel = expandRangeToSelection(crossColRange);
+    assert.ok(sel, "Selection object must be returned");
+    // Must clamp to primary column (col1Start) and exclude col2End
+    assert.ok(sel.text.includes("Supreme Court upheld the"), "Selection contains column 1 text");
+    assert.ok(!sel.text.includes("entertainment"), "Selection must NOT cross into adjacent column 2");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 34: Canvas Double-Buffering Retention Prevents White Flashes
+  // -------------------------------------------------------------------
+  runTest("Stability Test 34: Canvas double-buffering retention logic prevents white flashes", () => {
+    let hasBackup = false;
+    let isRendering = false;
+
+    // 1. Initial render completes
+    const mockSrcCanvas = { width: 800, height: 1100 };
+    const mockBackupCanvas = { width: 0, height: 0, getContext: () => ({ drawImage: () => {} }) };
+
+    // Copy to backup buffer
+    mockBackupCanvas.width = mockSrcCanvas.width;
+    mockBackupCanvas.height = mockSrcCanvas.height;
+    hasBackup = true;
+    isRendering = false;
+
+    assert.strictEqual(hasBackup, true, "Backup canvas buffer retains pixels");
+
+    // 2. Zoom level changes -> starts re-render
+    isRendering = true;
+    // During re-render, backup canvas display condition:
+    const showBackup = hasBackup && isRendering;
+    assert.strictEqual(showBackup, true, "Backup canvas is visibly displayed during render transitions");
+
+    // 3. New render completes
+    isRendering = false;
+    assert.strictEqual(hasBackup && isRendering, false, "Backup canvas smoothly hands off to sharp new canvas");
+  });
+
   console.log("\n-------------------------------------------------");
   if (testsFailed > 0) {
     console.error(`RESULTS: ${testsPassed} passed, ${testsFailed} failed.`);

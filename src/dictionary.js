@@ -39,6 +39,20 @@ export const BUILTIN_DICTIONARY = {
     alternatives: ["मांग", "आवश्यकता", "इच्छा", "तकाज़ा"],
     sentence: "Domestic demand continues to drive output. — घरेलू मांग उत्पादन को आगे बढ़ा रही है।"
   },
+  the: {
+    word: "the",
+    ipa: "/ðə/",
+    meaning: "निश्चित उपपद (Definite Article)",
+    alternatives: ["निश्चित उपपद (Definite Article)", "संज्ञा को विशिष्ट बनाने वाला शब्द"],
+    sentence: "The government announced a new policy. — सरकार ने एक नई नीति की घोषणा की।"
+  },
+  following: {
+    word: "following",
+    ipa: "/ˈfɑː.loʊ.ɪŋ/",
+    meaning: "के बाद / के फलस्वरूप",
+    alternatives: ["के बाद", "के फलस्वरूप", "के उपरांत", "के मद्देनज़र"],
+    sentence: "Following protests against the decision, officials announced a delay. — फ़ैसले के ख़िलाफ़ प्रदर्शनों के बाद, अधिकारियों ने देरी की घोषणा की।"
+  },
   economy: {
     word: "economy",
     ipa: "/ɪˈkɑː.nə.mi/",
@@ -706,7 +720,7 @@ export async function fetchWithTimeout(url, options = {}, timeoutMs = 3500) {
   const timer = setTimeout(() => timeoutController.abort(), timeoutMs);
 
   let combinedSignal = timeoutController.signal;
-  if (signal) {
+  if (signal && typeof signal.addEventListener === "function") {
     if (signal.aborted) {
       clearTimeout(timer);
       throw new DOMException("Aborted", "AbortError");
@@ -746,7 +760,18 @@ export function normalizeLookupText(rawText) {
 }
 
 // Master lookup function: handles both individual words AND complete phrases/sentences
-export async function lookupText(rawText, signal = null, contextSentence = "") {
+export async function lookupText(rawText, signalOrContext = null, maybeContext = "") {
+  let signal = null;
+  let contextSentence = "";
+
+  if (typeof signalOrContext === "string") {
+    contextSentence = signalOrContext;
+    signal = null;
+  } else {
+    signal = signalOrContext;
+    contextSentence = typeof maybeContext === "string" ? maybeContext : "";
+  }
+
   const normalized = normalizeLookupText(rawText);
   if (!normalized) {
     return null;
@@ -1135,18 +1160,21 @@ export async function lookupText(rawText, signal = null, contextSentence = "") {
   }
 
   // 6. Intelligent Fallback for Proper Nouns / Untranslated Words
-  const isProperNoun = /^[A-Z]/.test(word);
+  const lowerWord = word.toLowerCase();
+  const isKnownCommon = !!BUILTIN_DICTIONARY[lowerWord] || !!POLYSEMOUS_WORDS[lowerWord] || ["the", "a", "an", "following", "in", "after", "before", "during", "constitution", "special"].includes(lowerWord);
+  const isSentenceStart = contextSentence && contextSentence.trim().toLowerCase().startsWith(word.toLowerCase());
+  const isProperNoun = /^[A-Z][a-z]+/.test(word) && !isKnownCommon && !isSentenceStart;
   return {
     type: "word",
     text: word,
     word,
     ipa: teacherAnalysis.ipa || `/${word}/`,
-    meaning: isProperNoun ? word : "इस शब्द का हिन्दी अर्थ अभी उपलब्ध नहीं है।",
-    alternatives: isProperNoun ? [word] : ["इस शब्द का हिन्दी अर्थ अभी उपलब्ध नहीं है।"],
+    meaning: isProperNoun ? word : (teacherAnalysis.meaning || "इस शब्द का हिन्दी अर्थ अभी उपलब्ध नहीं है।"),
+    alternatives: isProperNoun ? [word] : (teacherAnalysis.alternatives?.length > 0 ? teacherAnalysis.alternatives : ["इस शब्द का हिन्दी अर्थ अभी उपलब्ध नहीं है।"]),
     pos: isProperNoun ? "Noun" : teacherAnalysis.pos,
     posHindi: isProperNoun ? "संज्ञा (Proper Noun)" : teacherAnalysis.posHindi,
     posConfidence: isProperNoun ? 0.9 : teacherAnalysis.posConfidence,
-    contextMeaning: isProperNoun ? word : "इस शब्द का हिन्दी अर्थ अभी उपलब्ध नहीं है।",
+    contextMeaning: isProperNoun ? word : (teacherAnalysis.contextMeaning || "इस शब्द का हिन्दी अर्थ अभी उपलब्ध नहीं है।"),
     contextDistinction: teacherAnalysis.contextDistinction,
     sentence: contextSentence,
     grammarExplanation: teacherAnalysis.grammarExplanation,

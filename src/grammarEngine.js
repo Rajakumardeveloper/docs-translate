@@ -12,6 +12,7 @@ export const PARTS_OF_SPEECH = {
   PREPOSITION: "Preposition",
   CONJUNCTION: "Conjunction",
   INTERJECTION: "Interjection",
+  ARTICLE: "Article",
   UNCERTAIN: "Uncertain"
 };
 
@@ -24,6 +25,7 @@ export const POS_HINDI_NAMES = {
   Preposition: "संबंधबोधक (Preposition)",
   Conjunction: "समुच्चयबोधक (Conjunction)",
   Interjection: "विस्मयादिबोधक (Interjection)",
+  Article: "उपपद (Definite/Indefinite Article)",
   Uncertain: "अस्पष्ट / संदर्भ आवश्यक (Context Needed)"
 };
 
@@ -361,6 +363,50 @@ export const POLYSEMOUS_WORDS = {
       ipa: "/steɪt/",
       phonetic: "stayt"
     }
+  },
+  following: {
+    preposition: {
+      meaning: "के बाद / के फलस्वरूप",
+      alternatives: ["के बाद", "के फलस्वरूप", "के उपरांत", "के मद्देनज़र"],
+      contextDistinction: "यहाँ 'following' एक Preposition (संबंधबोधक) है, जिसका अर्थ 'के बाद' या 'के उपरांत' (after) है, न कि क्रिया या 'अगला' (Adjective)।",
+      grammarExplanation: "वाक्य में 'Following' एक Preposition (संबंधबोधक) के रूप में प्रयुक्त हुआ है, जो किसी घटना के उपरांत होने वाली कार्रवाई या परिणाम को दर्शाता है।",
+      hinglishExplanation: "Yahan 'Following' ka matlab 'after' (ke baad) hai. Yeh Preposition ke roop me kisi event ke baad ki baat bata raha hai.",
+      example: "Following protests against the decision, officials announced a delay. — फ़ैसले के ख़िलाफ़ प्रदर्शनों के बाद, अधिकारियों ने देरी की घोषणा की।",
+      ipa: "/ˈfɑː.loʊ.ɪŋ/",
+      phonetic: "FAH-loh-ing"
+    },
+    adjective: {
+      meaning: "अगला / निम्नलिखित",
+      alternatives: ["अगला", "निम्नलिखित", "आगामी"],
+      contextDistinction: "यहाँ 'following' एक Adjective (विशेषण) है, जो अगले समय या आगामी सूची को दर्शाता है।",
+      grammarExplanation: "वाक्य में 'following' एक Adjective है, जो संज्ञा से पहले आकर उसकी क्रमबद्ध स्थिति को स्पष्ट करता है।",
+      hinglishExplanation: "Yahan 'following' ek Adjective hai, jiska matlab agla (next) ya nimnalikhit hai.",
+      example: "The court will reconvene the following day. — अदालत अगले दिन पुनः बैठेगी।",
+      ipa: "/ˈfɑː.loʊ.ɪŋ/",
+      phonetic: "FAH-loh-ing"
+    },
+    verb: {
+      meaning: "अनुसरण करना / पीछा करना / पालन करना",
+      alternatives: ["अनुसरण करना", "पालन करना", "पीछा करना"],
+      contextDistinction: "यहाँ 'following' क्रिया (Verb) के रूप में प्रयुक्त हुआ है।",
+      grammarExplanation: "वाक्य में 'following' एक Verb (क्रिया) है, जो किसी नियम का पालन करने या किसी के पीछे जाने का कार्य दर्शा रहा है।",
+      hinglishExplanation: "Yahan 'following' ek Verb (kriya) hai, jiska matlab follow karna ya rule manna hai.",
+      example: "Citizens were following safety protocols. — नागरिक सुरक्षा नियमों का पालन कर रहे थे।",
+      ipa: "/ˈfɑː.loʊ.ɪŋ/",
+      phonetic: "FAH-loh-ing"
+    }
+  },
+  the: {
+    article: {
+      meaning: "निश्चित उपपद (Definite Article)",
+      alternatives: ["निश्चित उपपद (Definite Article)", "संज्ञा को विशिष्ट बनाने वाला शब्द"],
+      contextDistinction: "अंग्रेज़ी में 'the' एक Definite Article (निश्चित उपपद) है, जो वाक्य में संज्ञा को विशिष्ट या निश्चित बनाता है।",
+      grammarExplanation: "वाक्य में 'the' एक Definite Article है, जो संज्ञा के पहले लगकर उसे निश्चित बनाता है। हिंदी में इसका कोई स्वतंत्र सर्वनाम अनुवाद (जैसे 'वह') नहीं होता।",
+      hinglishExplanation: "English me 'the' ek Definite Article hai jo kisi specific cheez ya vyakti ke liye use hota hai. Iska alag se 'vah' matlab nahi hota.",
+      example: "The government announced a new policy. — सरकार ने एक नई नीति की घोषणा की।",
+      ipa: "/ðə/",
+      phonetic: "thuh"
+    }
   }
 };
 
@@ -430,6 +476,28 @@ export function disambiguatePOS(targetWord, contextSentence) {
   const next2Lower = next2?.lower || "";
 
   // 0. Check closed-class words early
+  if (cleanWord === "the" || cleanWord === "a" || cleanWord === "an") {
+    return {
+      pos: PARTS_OF_SPEECH.ARTICLE,
+      confidence: 0.99,
+      reason: cleanWord === "the" ? "Definite article" : "Indefinite article"
+    };
+  }
+
+  // Special contextual rule for 'following' in newspaper reporting
+  if (cleanWord === "following") {
+    if (prev1 && ["is", "am", "are", "was", "were", "been", "be"].includes(prev1Lower)) {
+      return { pos: PARTS_OF_SPEECH.VERB, confidence: 0.95, reason: "Progressive verb following auxiliary 'be'" };
+    }
+    if (prev1 && ["the", "a", "this"].includes(prev1Lower) && next1 && !next1.isPunctuation) {
+      return { pos: PARTS_OF_SPEECH.ADJECTIVE, confidence: 0.92, reason: "Adjective modifying noun (e.g. 'the following day')" };
+    }
+    if (next1 && ["day", "days", "week", "weeks", "month", "months", "year", "years", "page", "table", "chart", "examples", "questions", "paragraphs"].includes(next1Lower)) {
+      return { pos: PARTS_OF_SPEECH.ADJECTIVE, confidence: 0.92, reason: "Adjective modifying time/reference noun" };
+    }
+    return { pos: PARTS_OF_SPEECH.PREPOSITION, confidence: 0.95, reason: "Preposition meaning 'after' / 'in the wake of'" };
+  }
+
   if (PREPOSITIONS.has(cleanWord)) {
     return { pos: PARTS_OF_SPEECH.PREPOSITION, confidence: 0.95, reason: "Standard preposition" };
   }
@@ -706,6 +774,10 @@ export function analyzeWordInContext(word, contextSentence = "") {
     case PARTS_OF_SPEECH.PRONOUN:
       grammarExp = `वाक्य में '${clean}' एक Pronoun (सर्वनाम) है, जो संज्ञा के स्थान पर दोहराव से बचने के लिए प्रयुक्त हुआ है।`;
       hinglishExp = `Yahan '${clean}' ek Pronoun (sarvanaam) hai.`;
+      break;
+    case PARTS_OF_SPEECH.ARTICLE:
+      grammarExp = `अंग्रेज़ी में '${clean}' एक Article (उपपद) है, जो संज्ञा से पहले लगकर उसकी विशिष्टता (Definite) या सामान्यता (Indefinite) को दर्शाता है। हिंदी में इसका स्वतंत्र अनुवाद नहीं होता।`;
+      hinglishExp = `English me '${clean}' ek Article hai jo Noun ko specific ya general banata hai. Iska alag se swatantra matlab nahi hota.`;
       break;
     default:
       grammarExp = `वाक्य में '${clean}' का व्याकरणिक उपयोग संदर्भ पर निर्भर करता है।`;
