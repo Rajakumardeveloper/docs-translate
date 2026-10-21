@@ -513,6 +513,182 @@ html, body {
   box-shadow: 0 8px 22px rgba(20, 119, 248, 0.35);
 }
 
+/* Drag and Drop Active Feedback */
+.reader-area.drag-active {
+  outline: 3px dashed var(--primary-blue);
+  outline-offset: -12px;
+  background-color: #eaf3fe;
+}
+
+.welcome-vision {
+  font-size: 15px !important;
+  color: #26436e !important;
+  font-weight: 500;
+  max-width: 460px !important;
+  line-height: 1.5 !important;
+  margin: 0 auto 20px !important;
+}
+
+.welcome-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.secondary-btn {
+  border: 1.5px solid #b7d1f5;
+  border-radius: 12px;
+  background: #f7faff;
+  color: var(--primary-blue);
+  font-size: 15px;
+  font-weight: 700;
+  padding: 12px 20px;
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.secondary-btn:hover {
+  background: #edf5fe;
+  border-color: var(--primary-blue);
+  transform: translateY(-1px);
+}
+
+/* 3-Step Reading Journey Card */
+.reading-journey-steps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin: 18px 0 16px;
+  text-align: left;
+}
+
+.journey-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: #f8fbff;
+  border: 1px solid #dce8f8;
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+.step-circle {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--primary-blue);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.step-desc {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.step-desc strong {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: #0b1735;
+}
+
+.step-desc span {
+  font-size: 11px;
+  color: #637794;
+  line-height: 1.3;
+}
+
+@media (max-width: 560px) {
+  .reading-journey-steps {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+}
+
+/* Scanned PDF In-Page OCR Processing Overlay */
+.ocr-processing-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(5px);
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  animation: fade-in 0.2s ease;
+}
+
+.ocr-processing-card {
+  background: #ffffff;
+  border: 1px solid #bfd7f7;
+  border-radius: 18px;
+  box-shadow: 0 16px 40px rgba(15, 45, 85, 0.16);
+  padding: 28px 24px;
+  width: min(380px, 92%);
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.ocr-spinner {
+  color: var(--primary-blue);
+  margin-bottom: 6px;
+}
+
+.ocr-processing-title {
+  font-size: 17px;
+  font-weight: 700;
+  color: #0b1836;
+  font-family: 'Noto Sans Devanagari', sans-serif;
+  line-height: 1.3;
+}
+
+.ocr-processing-sub {
+  font-size: 13px;
+  color: #556885;
+  font-weight: 500;
+  margin-bottom: 12px;
+}
+
+.ocr-progress-track {
+  width: 100%;
+  height: 8px;
+  background: #e5effa;
+  border-radius: 10px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.ocr-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #1477f8 0%, #3b91ff 100%);
+  border-radius: 10px;
+  transition: width 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.ocr-processing-tip {
+  font-size: 11.5px;
+  color: #6d829e;
+  font-family: 'Noto Sans Devanagari', sans-serif;
+  line-height: 1.4;
+}
+
 .feature-row {
   display: flex;
   justify-content: center;

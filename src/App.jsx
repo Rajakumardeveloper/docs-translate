@@ -99,6 +99,7 @@ export default function App() {
 
   // Fullscreen state
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
 
   // Element refs
   const fileInput = useRef(null);
@@ -519,23 +520,35 @@ export default function App() {
         setOcrProgress(20);
         setNotice(`पेज ${targetPage}: इमेज प्री-प्रोसेसिंग पूर्ण (20%)…`);
 
-        worker = await createWorker("eng", 1, {
-          logger: (m) => {
-            if (ocrAbortTokenRef.current !== currentOcrToken) return;
-            let prog = 25;
-            if (m.status === "loading tesseract core" || m.status === "initializing tesseract") {
-              prog = 25 + Math.round((m.progress || 0) * 10);
-              setNotice(`पेज ${targetPage}: OCR इंजन लोड हो रहा है (${prog}%)…`);
-            } else if (m.status === "loading language traineddata" || m.status === "initializing api") {
-              prog = 35 + Math.round((m.progress || 0) * 10);
-              setNotice(`पेज ${targetPage}: भाषा मॉडल लोड हो रहा है (${prog}%)…`);
-            } else if (m.status === "recognizing text" && typeof m.progress === "number") {
-              prog = 45 + Math.round(m.progress * 50);
-              setNotice(`पेज ${targetPage}: टेक्स्ट पहचान जारी है (${prog}%)…`);
-            }
-            setOcrProgress(Math.min(96, Math.max(10, prog)));
+        let langBase = typeof window !== "undefined" ? window.location.origin + (window.location.pathname.endsWith("/") ? window.location.pathname : window.location.pathname + "/") : "/";
+        const workerLogger = (m) => {
+          if (ocrAbortTokenRef.current !== currentOcrToken) return;
+          let prog = 25;
+          if (m.status === "loading tesseract core" || m.status === "initializing tesseract") {
+            prog = 25 + Math.round((m.progress || 0) * 10);
+            setNotice(`पेज ${targetPage}: OCR इंजन लोड हो रहा है (${prog}%)…`);
+          } else if (m.status === "loading language traineddata" || m.status === "initializing api") {
+            prog = 35 + Math.round((m.progress || 0) * 10);
+            setNotice(`पेज ${targetPage}: भाषा मॉडल लोड हो रहा है (${prog}%)…`);
+          } else if (m.status === "recognizing text" && typeof m.progress === "number") {
+            prog = 45 + Math.round(m.progress * 50);
+            setNotice(`पेज ${targetPage}: टेक्स्ट पहचान जारी है (${prog}%)…`);
           }
-        });
+          setOcrProgress(Math.min(96, Math.max(10, prog)));
+        };
+
+        try {
+          worker = await createWorker("eng", 1, {
+            langPath: langBase,
+            gzip: true,
+            logger: workerLogger
+          });
+        } catch (localWorkerErr) {
+          console.warn("Local OCR worker init failed, using default CDN fallback:", localWorkerErr);
+          worker = await createWorker("eng", 1, {
+            logger: workerLogger
+          });
+        }
 
         if (ocrAbortTokenRef.current !== currentOcrToken) {
           await worker.terminate();
@@ -1077,20 +1090,72 @@ export default function App() {
     }
   };
 
-  // File upload handler
-  const handleFileChange = async (e) => {
+  // Unified file processor for input upload & drag-and-drop
+  const processFile = async (f) => {
+    if (!f) return;
+    if (f.type !== "application/pdf" && !f.name.toLowerCase().endsWith(".pdf")) {
+      setNotice("कृपया केवल PDF (.pdf) फ़ाइल चुनें।");
+      return;
+    }
+    closePopup();
+    try {
+      window.getSelection()?.removeAllRanges();
+    } catch {}
+
+    // Reset OCR cache, active words, and search state so new PDF has no stale data
+    ocrCache.current.clear();
+    setOcrWords([]);
+    setIsScannedPage(false);
+    setSearchResults([]);
+    setSearchNotice("");
+    setPage(1);
+    setPageJumpInput("1");
+
+    try {
+      const buffer = await f.arrayBuffer();
+      setFile({ data: new Uint8Array(buffer) });
+      setNotice("");
+    } catch (err) {
+      console.warn("ArrayBuffer read fallback:", err);
+      setFile(f);
+      setNotice("");
+    }
+  };
+
+  const handleFileChange = (e) => {
     const f = e.target.files?.[0];
-    if (f) {
-      if (f.type !== "application/pdf" && !f.name.toLowerCase().endsWith(".pdf")) {
-        setNotice("कृपया केवल PDF (.pdf) फ़ाइल चुनें।");
-        return;
-      }
+    if (f) processFile(f);
+  };
+
+  // Drag and drop handlers for newspaper PDF
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!isDragging) setIsDragging(true);
+  };
+
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    const f = e.dataTransfer?.files?.[0];
+    if (f) processFile(f);
+  };
+
+  // Instant Sample Newspaper Loader
+  const loadSampleNewspaper = useCallback(async () => {
+    try {
       closePopup();
       try {
         window.getSelection()?.removeAllRanges();
       } catch {}
 
-      // Reset OCR cache, active words, and search state so second PDF has no stale data
       ocrCache.current.clear();
       setOcrWords([]);
       setIsScannedPage(false);
@@ -1098,18 +1163,25 @@ export default function App() {
       setSearchNotice("");
       setPage(1);
       setPageJumpInput("1");
+      setNotice("नमूना अख़बार लोड हो रहा है… (Loading Sample Newspaper)");
 
-      try {
-        const buffer = await f.arrayBuffer();
-        setFile({ data: new Uint8Array(buffer) });
-        setNotice("");
-      } catch (err) {
-        console.warn("ArrayBuffer read fallback:", err);
-        setFile(f);
-        setNotice("");
+      let sampleUrl = "sample-newspaper.pdf";
+      if (typeof window !== "undefined" && window.location) {
+        let base = window.location.origin + window.location.pathname;
+        if (!base.endsWith("/")) base += "/";
+        sampleUrl = `${base}sample-newspaper.pdf`;
       }
+
+      const res = await fetch(sampleUrl);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const buffer = await res.arrayBuffer();
+      setFile({ data: new Uint8Array(buffer) });
+      setNotice("");
+    } catch (err) {
+      console.warn("Error loading sample newspaper:", err);
+      setNotice("नमूना अख़बार लोड नहीं हो सका। कृपया अपनी PDF अपलोड करें।");
     }
-  };
+  }, [closePopup]);
 
   // Zoom controls with focal point preservation (closes open popup and preserves viewport center)
   const changeScaleWithFocalPoint = useCallback((targetScale) => {
@@ -1447,8 +1519,11 @@ export default function App() {
 
       {/* Main Newspaper Reader Area */}
       <main
-        className="reader-area"
+        className={`reader-area ${isDragging ? "drag-active" : ""}`}
         ref={readerAreaRef}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
         onTouchStart={handleReaderTouchStart}
         onTouchMove={handleReaderTouchMove}
         onTouchEnd={handleReaderTouchEnd}
@@ -1463,25 +1538,55 @@ export default function App() {
               <BookOpen size={46} strokeWidth={2.2} />
             </div>
             <h1>Read English. Understand Hindi.</h1>
-            <p>
-              Upload your daily English newspaper PDF. Select an individual word or a complete phrase
-              to view its accurate Hindi meaning and translation.
+            <p className="welcome-vision">
+              Make English newspapers easier to understand for Hindi-speaking students, one word at a time.
             </p>
 
-            <button
-              className="primary-btn"
-              onClick={() => fileInput.current?.click()}
-              aria-label="Upload Newspaper PDF"
-            >
-              <Upload size={18} /> Upload Newspaper PDF
-            </button>
+            <div className="welcome-actions">
+              <button
+                className="primary-btn"
+                onClick={() => fileInput.current?.click()}
+                aria-label="Upload Newspaper PDF"
+              >
+                <Upload size={18} /> Upload Newspaper PDF
+              </button>
+
+              <button
+                className="secondary-btn sample-btn"
+                onClick={loadSampleNewspaper}
+                aria-label="Open Sample Newspaper"
+              >
+                <FileText size={18} /> Open Sample Newspaper
+              </button>
+            </div>
+
+            <div className="reading-journey-steps">
+              <div className="journey-step">
+                <div className="step-circle">1</div>
+                <div className="step-desc">
+                  <strong>Upload Newspaper</strong>
+                  <span>Supports text & scanned PDFs</span>
+                </div>
+              </div>
+              <div className="journey-step">
+                <div className="step-circle">2</div>
+                <div className="step-desc">
+                  <strong>Read Naturally</strong>
+                  <span>Smooth zoom & 2D panning</span>
+                </div>
+              </div>
+              <div className="journey-step">
+                <div className="step-circle">3</div>
+                <div className="step-desc">
+                  <strong>Tap Any Word</strong>
+                  <span>Hindi meaning & part of speech</span>
+                </div>
+              </div>
+            </div>
 
             <div className="feature-row">
               <span>
-                <Languages size={17} /> Word & Phrase Translation
-              </span>
-              <span>
-                <Volume2 size={17} /> Audio Pronunciation
+                <Languages size={17} /> Word Meanings
               </span>
               <span>
                 <ScanText size={17} /> Scanned PDF OCR
@@ -1526,6 +1631,30 @@ export default function App() {
                     </div>
                   }
                 />
+
+                {/* Scanned PDF In-Page OCR Processing Indicator */}
+                {isScannedPage && ocrBusy && (
+                  <div className="ocr-processing-overlay" aria-live="polite">
+                    <div className="ocr-processing-card">
+                      <div className="ocr-spinner">
+                        <LoaderCircle size={38} className="spin" />
+                      </div>
+                      <h3 className="ocr-processing-title">स्कैन किया गया पेज प्रोसेस हो रहा है…</h3>
+                      <p className="ocr-processing-sub">
+                        Processing scanned newspaper with OCR ({ocrProgress}%)
+                      </p>
+                      <div className="ocr-progress-track">
+                        <div
+                          className="ocr-progress-fill"
+                          style={{ width: `${Math.max(8, ocrProgress)}%` }}
+                        />
+                      </div>
+                      <span className="ocr-processing-tip">
+                        टेक्स्ट पहचान पूर्ण होते ही आप किसी भी शब्द पर टैप करके अर्थ देख सकेंगे।
+                      </span>
+                    </div>
+                  </div>
+                )}
 
                 {/* Scanned PDF interactive transparent selectable OCR layer */}
                 {isScannedPage && ocrWords.length > 0 && showOcrBoxes && (
@@ -1789,15 +1918,26 @@ export default function App() {
             ) : (
               <div className="drawer-empty">
                 <p>No PDF is currently loaded.</p>
-                <button
-                  className="primary-btn"
-                  onClick={() => {
-                    setShowPagesDrawer(false);
-                    fileInput.current?.click();
-                  }}
-                >
-                  <Upload size={17} /> Choose PDF File
-                </button>
+                <div style={{ display: "flex", flexDirection: "column", gap: "10px", width: "100%" }}>
+                  <button
+                    className="primary-btn"
+                    onClick={() => {
+                      setShowPagesDrawer(false);
+                      fileInput.current?.click();
+                    }}
+                  >
+                    <Upload size={17} /> Choose PDF File
+                  </button>
+                  <button
+                    className="secondary-btn"
+                    onClick={() => {
+                      setShowPagesDrawer(false);
+                      loadSampleNewspaper();
+                    }}
+                  >
+                    <FileText size={17} /> Open Sample Newspaper
+                  </button>
+                </div>
               </div>
             )}
           </div>
