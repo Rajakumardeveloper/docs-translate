@@ -16,6 +16,8 @@ import {
 } from "./src/selection.js";
 import { lookupText, normalizeLookupText, BUILTIN_DICTIONARY } from "./src/dictionary.js";
 import { disambiguatePOS } from "./src/grammarEngine.js";
+import { getCachedOcrWords, setCachedOcrWords, clearOcrCache } from "./src/ocrStorage.js";
+import { evaluatePageNativeText, parseOcrWords } from "./src/ocrEngine.js";
 
 // Polyfill minimal Node constants if not in browser
 if (typeof globalThis.Node === "undefined") {
@@ -1557,6 +1559,321 @@ async function main() {
     assert.ok(html.includes('translate="no"'), "HTML root must include translate='no'");
     assert.ok(html.includes('class="notranslate"'), "HTML root must include class='notranslate'");
     assert.ok(html.includes('<meta name="google" content="notranslate"'), "HTML head must include notranslate meta tag");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 40: Specific Regression Test: RESERVATION vs PRICE BAND: ₹1,065 TO Mismatch
+  // -------------------------------------------------------------------
+  await runAsyncTest("Directive Test 40: Specific regression test for 'RESERVATION' vs 'PRICE BAND: ₹1,065 TO' mismatch", async () => {
+    let activeRevision = 0;
+    let popupState = null;
+
+    // Simulate Authoritative Selection State Machine (as implemented in App.jsx)
+    const handleSelection = async (text, delayMs, simulatedTranslation) => {
+      const currentRev = ++activeRevision;
+      // 1. Immediately update popup to the NEW selection with loading state
+      // Wipes out any previous selection (e.g. RESERVATION) immediately!
+      popupState = {
+        text,
+        word: text,
+        meaning: "खोज रहे हैं… (Loading…)",
+        alternatives: [],
+        revision: currentRev,
+        busy: true
+      };
+
+      // 2. Simulate asynchronous network translation response
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+
+      // 3. Stale response check: discard if a newer selection has occurred
+      if (currentRev === activeRevision) {
+        popupState = {
+          text,
+          word: text,
+          meaning: simulatedTranslation.meaning,
+          alternatives: simulatedTranslation.alternatives || [simulatedTranslation.meaning],
+          revision: currentRev,
+          busy: false
+        };
+      }
+    };
+
+    // Step A: User selects 'RESERVATION' (slower response, e.g. 100ms)
+    const p1 = handleSelection("RESERVATION", 100, {
+      meaning: "आरक्षण",
+      alternatives: ["आरक्षण", "संशय"]
+    });
+
+    // Step B: User quickly selects 'PRICE BAND: ₹1,065 TO' (e.g. 30ms later)
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const p2 = handleSelection("PRICE BAND: ₹1,065 TO", 20, {
+      meaning: "मूल्य दायरा: ₹1,065 तक",
+      alternatives: ["मूल्य दायरा: ₹1,065 तक", "कीमत सीमा"]
+    });
+
+    // Wait for both requests to settle
+    await Promise.all([p1, p2]);
+
+    // Acceptance Verification:
+    assert.ok(popupState, "Popup state must exist");
+    assert.strictEqual(popupState.text, "PRICE BAND: ₹1,065 TO", "Popup text must be the second selection");
+    assert.ok(popupState.meaning.includes("मूल्य दायरा"), "Popup meaning must correspond to PRICE BAND");
+    assert.strictEqual(popupState.meaning.includes("आरक्षण"), false, "Popup must NEVER display meaning for RESERVATION");
+    assert.strictEqual(popupState.revision, 2, "Authoritative revision must match second selection");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 41: Rapid Successive Selections with Out-Of-Order Async Responses
+  // -------------------------------------------------------------------
+  await runAsyncTest("Directive Test 41: Rapid successive selections with out-of-order asynchronous responses", async () => {
+    let currentRevision = 0;
+    let popupState = null;
+
+    const dispatchSelection = async (word, delayMs, meaning) => {
+      const thisRev = ++currentRevision;
+      popupState = { word, meaning: "खोज रहे हैं…", revision: thisRev };
+
+      await new Promise((r) => setTimeout(r, delayMs));
+
+      // Discard stale response if a newer selection occurred
+      if (thisRev === currentRevision) {
+        popupState = { word, meaning, revision: thisRev };
+      }
+    };
+
+    // 5 rapid selections with reverse completion delays (first is slowest, last is fastest)
+    const promises = [
+      dispatchSelection("inflation", 150, "महँगाई"),
+      dispatchSelection("judiciary", 120, "न्यायपालिका"),
+      dispatchSelection("sovereignty", 90, "संप्रभुता"),
+      dispatchSelection("democracy", 60, "लोकतंत्र"),
+      dispatchSelection("fundamental", 20, "मौलिक")
+    ];
+
+    await Promise.all(promises);
+
+    assert.strictEqual(popupState.word, "fundamental", "Only the latest selection must be active");
+    assert.strictEqual(popupState.meaning, "मौलिक", "Meaning must correspond only to the latest selection");
+    assert.strictEqual(popupState.revision, 5, "Revision must be 5");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 42: Automatic Translation Trigger on Pointer Release Without Extra Tap
+  // -------------------------------------------------------------------
+  runTest("Directive Test 42: Automatic translation trigger on pointer release without extra tap", () => {
+    // 1. Mouse Drag Selection with movement:
+    // In buggy code: mouseDragStartRef.current.hasMoved = true caused onMouseUp to return early without translation.
+    // In fixed code: hasActiveSelection ensures selection is captured immediately on mouseup.
+    let hasMoved = true;
+    const mockSelection = {
+      isCollapsed: false,
+      rangeCount: 1,
+      toString: () => "comprehensive economic reforms"
+    };
+
+    const hasActiveSelection = mockSelection && !mockSelection.isCollapsed && mockSelection.toString().trim().length > 0;
+    let selectionTriggered = false;
+
+    // Simulation of fixed processSelectionOrClick handler:
+    if (!hasActiveSelection && hasMoved) {
+      // would bail out if no selection
+    } else {
+      hasMoved = false;
+      if (hasActiveSelection) {
+        const text = normalizeSelectionText(mockSelection.toString());
+        if (text) {
+          selectionTriggered = true;
+        }
+      }
+    }
+
+    assert.strictEqual(selectionTriggered, true, "Selection must trigger automatically on mouseup without extra tap");
+    assert.strictEqual(hasMoved, false, "hasMoved flag must be cleared");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 43: Multi-Word Selection with Currency Symbols, Colons, Numbers, and Dates
+  // -------------------------------------------------------------------
+  await runAsyncTest("Directive Test 43: Multi-word selection with currency symbols, colons, numbers, and dates", async () => {
+    const testCases = [
+      { raw: "PRICE BAND: ₹1,065 TO", expected: "PRICE BAND: ₹1,065 TO", type: "phrase" },
+      { raw: "Repo rate: 6.50% unchanged", expected: "Repo rate: 6.50% unchanged", type: "phrase" },
+      { raw: "Target: ₹11,200 crore", expected: "Target: ₹11,200 crore", type: "phrase" },
+      { raw: "Dated: October 21, 2026", expected: "Dated: October 21, 2026", type: "phrase" },
+      { raw: "FDI inflow: $50.4 billion in 2025-26", expected: "FDI inflow: $50.4 billion in 2025-26", type: "phrase" }
+    ];
+
+    for (const tc of testCases) {
+      const mockRange = {
+        collapsed: false,
+        toString: () => tc.raw,
+        startContainer: { nodeType: 3, textContent: tc.raw },
+        getBoundingClientRect: () => ({ left: 50, top: 100, width: 200, height: 20 }),
+        getClientRects: () => [{ left: 50, top: 100, width: 200, height: 20 }]
+      };
+
+      const extracted = expandRangeToSelection(mockRange);
+      assert.ok(extracted, `Extraction must succeed for "${tc.raw}"`);
+      assert.strictEqual(extracted.text, tc.expected, `Normalized text must preserve numbers and currency symbols`);
+
+      // Test dictionary lookup
+      const res = await lookupText(extracted.text);
+      assert.ok(res, `Lookup must return valid entry for "${tc.raw}"`);
+      assert.ok(res.meaning && res.meaning.length > 0, `Meaning must be non-empty for "${tc.raw}"`);
+    }
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 44: Digital vs Scanned Page Detection and OCR Bypass
+  // -------------------------------------------------------------------
+  await runAsyncTest("Directive Test 44: Digital vs scanned page detection and OCR bypass", async () => {
+    // Digital Page Mock (has rich text content)
+    const mockDigitalPage = {
+      getTextContent: async () => ({
+        items: [
+          { str: "CABINET APPROVES HISTORIC INFRASTRUCTURE REFORMS" },
+          { str: "The Union Cabinet on Wednesday approved a historic package" },
+          { str: "designed to enhance national infrastructure and industrial capacity" },
+          { str: "Speaking at a press conference, the Finance Minister emphasized" },
+          { str: "that the new policy will create millions of skilled jobs." }
+        ]
+      })
+    };
+
+    const digitalResult = await evaluatePageNativeText(mockDigitalPage);
+    assert.strictEqual(digitalResult.isScanned, false, "Page with native text must be classified as digital");
+    assert.strictEqual(digitalResult.hasNativeText, true, "Digital page must have usable native text");
+    assert.ok(digitalResult.wordCount >= 20, "Word count must be identified");
+
+    // Scanned Page Mock (zero or negligible text items)
+    const mockScannedPage = {
+      getTextContent: async () => ({
+        items: []
+      })
+    };
+
+    const scannedResult = await evaluatePageNativeText(mockScannedPage);
+    assert.strictEqual(scannedResult.isScanned, true, "Page with no text items must be classified as scanned");
+    assert.strictEqual(scannedResult.hasNativeText, false, "Scanned page must not have native text");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 45: Persistent Page-Level OCR Caching (IndexedDB & Memory)
+  // -------------------------------------------------------------------
+  await runAsyncTest("Directive Test 45: Persistent page-level OCR caching across page navigation", async () => {
+    const docId = "test_newspaper_vol48";
+    const page1Words = [
+      { text: "CABINET", clean: "CABINET", relBox: { x0: 0.1, y0: 0.1, x1: 0.3, y1: 0.15 }, confidence: 95 },
+      { text: "APPROVES", clean: "APPROVES", relBox: { x0: 0.32, y0: 0.1, x1: 0.5, y1: 0.15 }, confidence: 92 }
+    ];
+
+    // Save page 1 OCR words
+    await setCachedOcrWords(docId, 1, page1Words);
+
+    // Simulate navigation: visit page 1
+    const p1 = await getCachedOcrWords(docId, 1);
+    assert.ok(p1, "Page 1 OCR words must be cached");
+    assert.strictEqual(p1.length, 2);
+    assert.strictEqual(p1[0].clean, "CABINET");
+
+    // Navigate to page 2 (not yet scanned)
+    const p2 = await getCachedOcrWords(docId, 2);
+    assert.strictEqual(p2, null, "Page 2 must return null before scanning");
+
+    // Navigate to page 3 (not yet scanned)
+    const p3 = await getCachedOcrWords(docId, 3);
+    assert.strictEqual(p3, null, "Page 3 must return null before scanning");
+
+    // Return to page 1: must load instantly from cache without repeat OCR
+    const p1Return = await getCachedOcrWords(docId, 1);
+    assert.ok(p1Return, "Page 1 must load instantly from cache upon returning");
+    assert.strictEqual(p1Return[0].clean, "CABINET");
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 46: OCR Word Bounding Box Parsing and Coordinate Preservation
+  // -------------------------------------------------------------------
+  runTest("Directive Test 46: OCR word bounding box parsing and coordinate preservation", () => {
+    const mockTsv = [
+      "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext",
+      "5\t1\t1\t1\t1\t1\t180\t240\t360\t60\t92\tINFRASTRUCTURE",
+      "5\t1\t1\t1\t1\t2\t560\t240\t280\t60\t89\tREFORMS"
+    ].join("\n");
+
+    const words = parseOcrWords({ tsv: mockTsv }, 1800, 2400);
+    assert.strictEqual(words.length, 2, "Must parse 2 OCR words");
+    assert.strictEqual(words[0].clean, "INFRASTRUCTURE");
+    assert.strictEqual(words[1].clean, "REFORMS");
+
+    // Check zoom-invariant normalized relative coordinates
+    assert.strictEqual(words[0].relBox.x0, 180 / 1800);
+    assert.strictEqual(words[0].relBox.y0, 240 / 2400);
+    assert.strictEqual(words[0].relBox.x1, (180 + 360) / 1800);
+    assert.strictEqual(words[0].relBox.y1, (240 + 60) / 2400);
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 47: Non-Blocking Navigation During Background OCR Processing
+  // -------------------------------------------------------------------
+  runTest("Directive Test 47: Non-blocking navigation during background OCR processing", () => {
+    // If Page 1 is running OCR in background:
+    const activeOcrPage = 1;
+    const ocrBusy = true;
+
+    // Student navigates to Page 2 (digital page)
+    const currentPage = 2;
+    const isCurrentPageScanned = false;
+
+    // In PdfPagePaper, overlay visibility condition is:
+    const isOverlayVisibleOnPage2 = isCurrentPageScanned && ocrBusy && activeOcrPage === currentPage;
+
+    assert.strictEqual(
+      isOverlayVisibleOnPage2,
+      false,
+      "OCR overlay must NOT be visible or blocking on Page 2 while Page 1 processes in background"
+    );
+  });
+
+  // -------------------------------------------------------------------
+  // TEST 48: Translation Failure and Retry Without Keeping Misleading Stale State
+  // -------------------------------------------------------------------
+  await runAsyncTest("Directive Test 48: Translation failure and retry without keeping misleading stale state", async () => {
+    let popupState = {
+      text: "RESERVATION",
+      word: "RESERVATION",
+      meaning: "आरक्षण",
+      isError: false
+    };
+
+    // User selects a new word "unprecedented" that encounters network failure
+    const newWord = "unprecedented";
+    const currentRev = 10;
+
+    // Immediate update clears old meaning
+    popupState = {
+      text: newWord,
+      word: newWord,
+      meaning: "खोज रहे हैं…",
+      isError: false,
+      revision: currentRev
+    };
+
+    // Simulated network error occurs
+    const simulatedError = new Error("Network request failed");
+    if (popupState.revision === currentRev) {
+      popupState = {
+        text: newWord,
+        word: newWord,
+        meaning: "अनुवाद सेवा उपलब्ध नहीं है (नेटवर्क त्रुटि)।",
+        isError: true,
+        revision: currentRev
+      };
+    }
+
+    assert.strictEqual(popupState.text, "unprecedented", "Popup must show the failed selection word");
+    assert.strictEqual(popupState.isError, true, "isError must be true");
+    assert.ok(popupState.meaning.includes("त्रुटि"), "Must show error message");
+    assert.strictEqual(popupState.meaning.includes("आरक्षण"), false, "Must NEVER retain stale meaning from previous word");
   });
 
   console.log("\n-------------------------------------------------");

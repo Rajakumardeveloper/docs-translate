@@ -158,6 +158,20 @@ export const BUILTIN_DICTIONARY = {
     alternatives: ["प्रतिबद्धता", "वचनबद्धता", "संकल्प"],
     sentence: "India reiterated its commitment to peace. — भारत ने शांति के प्रति अपनी प्रतिबद्धता दोहराई।"
   },
+  reservation: {
+    word: "reservation",
+    ipa: "/ˌrez.ɚˈveɪ.ʃən/",
+    meaning: "आरक्षण",
+    alternatives: ["आरक्षण", "संशय", "संदेह", "पूर्व-आरक्षण"],
+    sentence: "The Constitution provides for reservation in educational institutions. — संविधान शिक्षण संस्थानों में आरक्षण का प्रावधान करता है।"
+  },
+  "price band": {
+    word: "price band",
+    ipa: "/praɪs bænd/",
+    meaning: "मूल्य दायरा (Price Band)",
+    alternatives: ["मूल्य दायरा", "कीमत सीमा", "मूल्य पट्टी"],
+    sentence: "The company announced a price band of ₹1,065 to ₹1,120. — कंपनी ने ₹1,065 से ₹1,120 के मूल्य दायरे की घोषणा की।"
+  },
   recovery: {
     word: "recovery",
     ipa: "/rɪˈkʌv.ɚ.i/",
@@ -828,6 +842,59 @@ export async function lookupText(rawText, signalOrContext = null, maybeContext =
         hinglishExplanation: cached.hinglishExplanation || (isSentence ? "Yeh ek complete sentence translation hai." : "Yeh ek multi-word phrase hai."),
         exampleSentence: cached.exampleSentence || normalized,
         exampleHindi: cached.exampleHindi || cached.meaning
+      };
+    }
+
+    // 1b. Check Built-in Editorial & Financial Phrases
+    const lowerPhrase = normalized.toLowerCase().replace(/^[“"‘'(\[{<«»—–\s]+|[”"’')\]}>«»—–\s]+$/g, "");
+    if (BUILTIN_DICTIONARY[lowerPhrase]) {
+      const b = BUILTIN_DICTIONARY[lowerPhrase];
+      return {
+        type,
+        text: normalized,
+        word: normalized,
+        ipa: b.ipa || "",
+        meaning: b.meaning,
+        alternatives: b.alternatives || [b.meaning],
+        sentence: contextSentence || b.sentence || normalized,
+        pos: isSentence ? "Sentence" : "Phrase",
+        posHindi: isSentence ? "पूर्ण वाक्य (Sentence)" : "वाक्यांश (Phrase)",
+        posConfidence: 1.0,
+        contextMeaning: b.meaning,
+        contextDistinction: isSentence ? "पूर्ण वाक्य अनुवाद (Sentence Translation)" : "वाक्यांश अनुवाद (Phrase Translation)",
+        grammarExplanation: isSentence ? "यह एक पूर्ण वाक्य है जिसमें कर्ता और क्रिया शामिल हैं।" : "यह दो या अधिक शब्दों का एक संयुक्त वाक्यांश (Phrase) है।",
+        hinglishExplanation: isSentence ? "Yeh ek complete sentence translation hai." : "Yeh ek multi-word phrase hai.",
+        exampleSentence: b.sentence || normalized,
+        exampleHindi: b.meaning,
+        phonetic: "",
+        isContextCertain: true,
+        source: "Built-in dictionary"
+      };
+    } else if (lowerPhrase.startsWith("price band")) {
+      const numMatch = normalized.match(/₹?\s*([0-9,.]+)\s*(?:to|-)\s*(?:₹?\s*([0-9,.]+))?/i);
+      const meaning = numMatch
+        ? `मूल्य दायरा: ₹${numMatch[1]}${numMatch[2] ? ` से ₹${numMatch[2]}` : " तक"}`
+        : "मूल्य दायरा (Price Band)";
+      return {
+        type,
+        text: normalized,
+        word: normalized,
+        ipa: "",
+        meaning,
+        alternatives: [meaning, "कीमत सीमा (Price Band)"],
+        sentence: contextSentence || normalized,
+        pos: "Phrase",
+        posHindi: "वाक्यांश (Phrase)",
+        posConfidence: 1.0,
+        contextMeaning: meaning,
+        contextDistinction: "वित्तीय वाक्यांश अनुवाद (Financial Phrase)",
+        grammarExplanation: "यह वित्तीय समाचारों में उपयोग होने वाला मूल्य दायरा वाक्यांश (Price Band) है।",
+        hinglishExplanation: "Yeh financial news me IPO/share price band phrase hai.",
+        exampleSentence: normalized,
+        exampleHindi: meaning,
+        phonetic: "",
+        isContextCertain: true,
+        source: "Financial Phrase Engine"
       };
     }
 

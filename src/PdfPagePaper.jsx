@@ -116,7 +116,7 @@ function PdfPagePaperImpl({
         }
       />
 
-      {/* Scanned PDF In-Page OCR Processing Indicator */}
+      {/* Scanned PDF In-Page OCR Processing Indicator (only shown for this specific page when actively processing) */}
       {isScannedPage && ocrBusy && (
         <div className="ocr-processing-overlay" aria-live="polite">
           <div className="ocr-processing-card">
@@ -183,11 +183,8 @@ function PdfPagePaperImpl({
             const topPct = (item.relBox.y0 * 100).toFixed(3);
             const widthPct = Math.max(0.1, (item.relBox.x1 - item.relBox.x0) * 100).toFixed(3);
             const heightPct = Math.max(0.1, (item.relBox.y1 - item.relBox.y0) * 100).toFixed(3);
-            const isActive = activeOcrIndex != null
-              ? idx === activeOcrIndex
-              : (activeSelectedText && activeSelectedText.length > 3
-                  ? item.clean?.toLowerCase() === activeSelectedText.toLowerCase()
-                  : false);
+            // Strict active check: ONLY highlight the exact OCR word index selected, never all occurrences of the word!
+            const isActive = activeOcrIndex != null && idx === activeOcrIndex;
 
             return (
               <span

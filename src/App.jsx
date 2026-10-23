@@ -28,7 +28,6 @@ import {
   Copy,
   Check
 } from "lucide-react";
-import { createWorker } from "tesseract.js";
 import { getPublicAssetUrl } from "./assetHelper.js";
 import { lookupText, normalizeLookupText } from "./dictionary.js";
 import {
@@ -39,6 +38,8 @@ import {
   calculatePopupPosition,
   segmentOcrText
 } from "./selection.js";
+import { getCachedOcrWords, setCachedOcrWords, clearOcrCache } from "./ocrStorage.js";
+import { evaluatePageNativeText, performPageOCR, terminateSharedWorker } from "./ocrEngine.js";
 
 function escapeRegex(string) {
   return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -99,6 +100,7 @@ export default function App() {
 
   // OCR state
   const [ocrBusy, setOcrBusy] = useState(false);
+  const [activeOcrPage, setActiveOcrPage] = useState(null);
   const [ocrProgress, setOcrProgress] = useState(0);
   const [ocrWords, setOcrWords] = useState([]);
   const [showOcrBoxes, setShowOcrBoxes] = useState(true);
@@ -116,6 +118,11 @@ export default function App() {
   const popupRef = useRef(null);
   const abortControllerRef = useRef(null);
   const requestIdRef = useRef(0);
+  const selectionRevisionRef = useRef(0);
+  const activeSelectionIdRef = useRef(null);
+  const isPointerDownRef = useRef(false);
+  const lastProcessedSelectionSignatureRef = useRef(null);
+  const pageScannedMapRef = useRef(new Map());
   const touchStartPos = useRef({ x: 0, y: 0 });
   const ocrCache = useRef(new Map());
 
@@ -145,10 +152,20 @@ export default function App() {
   const activeOcrPageRef = useRef(null);
   const ocrAbortTokenRef = useRef(0);
 
+  // Document fingerprint for persistent caching across sessions and page navigation
+  const docFingerprint = useMemo(() => {
+    if (!file) return "default_newspaper";
+    if (file.name) return `${file.name}_${file.size || 0}_${numPages}`;
+    if (file.data) return `buffer_${file.data.length}_${numPages}`;
+    return `doc_${numPages}`;
+  }, [file, numPages]);
+
   // Safely close active dictionary/translation popup and abort any in-flight requests
   // Defined early so all hooks, effects, and handlers have access without TDZ
   const closePopup = useCallback(() => {
-    requestIdRef.current++;
+    selectionRevisionRef.current++;
+    activeSelectionIdRef.current = null;
+    lastProcessedSelectionSignatureRef.current = null;
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
       abortControllerRef.current = null;
@@ -240,16 +257,19 @@ export default function App() {
     dismissedSignatureRef.current = null;
     ocrAbortTokenRef.current++;
     activeOcrPageRef.current = null;
+    setActiveOcrPage(null);
     setOcrBusy(false);
     setOcrProgress(0);
     try {
       window.getSelection()?.removeAllRanges();
     } catch {}
     setOcrWords([]);
+    setIsScannedPage(false);
     setSearchResults([]);
     setSearchNotice("");
     setNotice("");
     ocrCache.current.clear();
+    pageScannedMapRef.current.clear();
   };
 
   const onDocumentLoadError = (err) => {
@@ -330,8 +350,10 @@ export default function App() {
     dismissedSignatureRef.current = null;
     setInteractionState("translating");
 
-    // Increment request token to discard any previous in-flight responses
-    const currentReqId = ++requestIdRef.current;
+    // Increment selection revision token to discard any previous in-flight responses
+    const currentRev = ++selectionRevisionRef.current;
+    const selectionId = `sel_${Date.now()}_${currentRev}`;
+    activeSelectionIdRef.current = selectionId;
 
     // Cancel any previous in-flight request before initiating a new one
     if (abortControllerRef.current) {
@@ -347,11 +369,12 @@ export default function App() {
     setCopied(false);
 
     // Compute relative highlight boxes within pagePaperRef to render sharp, non-intrusive highlight
+    let boxes = [];
     if (pagePaperRef.current && (rect || item?.clientRects)) {
       try {
         const paperRect = pagePaperRef.current.getBoundingClientRect();
         const rawRects = item?.clientRects && item.clientRects.length > 0 ? item.clientRects : (rect ? [rect] : []);
-        const boxes = rawRects
+        boxes = rawRects
           .filter(r => r && (r.width > 0 || r.height > 0))
           .map(r => ({
             left: Math.max(0, r.left - paperRect.left),
@@ -373,40 +396,46 @@ export default function App() {
       setActiveOcrIndex(null);
     }
 
-    // Clear native browser selection handles once captured to suppress Android's intrusive system toolbar (Copy / Share / Web search)
-    // Custom highlight boxes maintain visible selection highlight seamlessly
-    try {
-      window.getSelection()?.removeAllRanges();
-    } catch {}
+    // On mobile touch devices with active custom highlight boxes, collapse system selection handles to suppress Android system bar
+    // On desktop, keep user selection visible
+    if (typeof window !== "undefined" && window.innerWidth <= 640 && boxes.length > 0) {
+      try {
+        window.getSelection()?.removeAllRanges();
+      } catch {}
+    }
 
     const isMultiWord = words.length > 1;
     const initialType = isMultiWord ? (type === "sentence" ? "sentence" : "phrase") : "word";
 
+    // Authoritative State: Immediately update popup to the NEW selection with loading state
+    // Old word/meaning (e.g. RESERVATION) is NEVER retained when a new selection is made!
     setEntry({
       type: initialType,
       text,
       word: text,
       ipa: initialType === "word" ? `/${text}/` : "",
       meaning: initialType === "word" ? "अर्थ खोज रहे हैं…" : "अनुवाद कर रहे हैं… (Translating phrase…)",
-      alternatives: [initialType === "word" ? "अर्थ खोज रहे हैं…" : "अनुवाद कर रहे हैं…"],
+      alternatives: [],
       sentence,
       ocrConfidence,
-      isError: false
+      isError: false,
+      revision: currentRev
     });
     setBusy(true);
 
     // Safety master timeout: prevent lookup from ever staying stuck in loading
     const masterTimeout = setTimeout(() => {
-      if (abortControllerRef.current && currentReqId === requestIdRef.current) {
+      if (abortControllerRef.current && currentRev === selectionRevisionRef.current) {
         abortControllerRef.current.abort();
       }
     }, 7000);
 
     try {
       const res = await lookupText(text, signal, sentence);
-      if (!signal.aborted && currentReqId === requestIdRef.current) {
+      // Strictly verify response corresponds to the ACTIVE selection revision
+      if (!signal.aborted && currentRev === selectionRevisionRef.current) {
         if (res) {
-          setEntry({ ...res, ocrConfidence, isError: false });
+          setEntry({ ...res, ocrConfidence, isError: false, revision: currentRev });
           setInteractionState("showing-result");
           if (rect) {
             setPopupPos(calculatePopupPosition(rect, 320, 160));
@@ -414,7 +443,7 @@ export default function App() {
         }
       }
     } catch (e) {
-      if (e.name !== "AbortError" && !signal.aborted && currentReqId === requestIdRef.current) {
+      if (e.name !== "AbortError" && !signal.aborted && currentRev === selectionRevisionRef.current) {
         setEntry({
           type: initialType,
           text,
@@ -424,13 +453,14 @@ export default function App() {
           alternatives: ["अनुवाद सेवा उपलब्ध नहीं है (नेटवर्क त्रुटि)।"],
           sentence,
           ocrConfidence,
-          isError: true
+          isError: true,
+          revision: currentRev
         });
         setInteractionState("showing-result");
       }
     } finally {
       clearTimeout(masterTimeout);
-      if (!signal.aborted && currentReqId === requestIdRef.current) {
+      if (!signal.aborted && currentRev === selectionRevisionRef.current) {
         setBusy(false);
       }
     }
@@ -484,7 +514,7 @@ export default function App() {
     }
   }, [entry, activeWordRect, openMeaning]);
 
-  // High-Resolution Automatic & Manual OCR Pipeline for Scanned Newspaper Pages (Phase 3 & 4)
+  // High-Resolution Automatic & Manual OCR Pipeline for Scanned Newspaper Pages with Persistent Storage
   const processPageOCR = useCallback(
     async (targetPage, isManual = false) => {
       if (!pdfDoc && !pdfCanvas.current) {
@@ -492,9 +522,23 @@ export default function App() {
         return;
       }
 
-      if (ocrCache.current.has(targetPage)) {
+      // 1. Check persistent cache (IndexedDB + memory) first (0ms instant)
+      const cached = await getCachedOcrWords(docFingerprint, targetPage);
+      if (cached && Array.isArray(cached) && cached.length > 0) {
+        ocrCache.current.set(targetPage, cached);
         if (page === targetPage) {
-          setOcrWords(ocrCache.current.get(targetPage));
+          setOcrWords(cached);
+          setIsScannedPage(true);
+        }
+        if (isManual) setNotice(`पेज ${targetPage} के लिए कैश किया गया OCR लोड किया गया।`);
+        return;
+      }
+
+      if (ocrCache.current.has(targetPage)) {
+        const memWords = ocrCache.current.get(targetPage);
+        if (page === targetPage) {
+          setOcrWords(memWords);
+          setIsScannedPage(true);
         }
         if (isManual) setNotice(`पेज ${targetPage} के लिए कैश किया गया OCR लोड किया गया।`);
         return;
@@ -504,8 +548,8 @@ export default function App() {
         return;
       }
 
-      const currentOcrToken = ++ocrAbortTokenRef.current;
       activeOcrPageRef.current = targetPage;
+      setActiveOcrPage(targetPage);
       setOcrBusy(true);
       setOcrProgress(10);
       setNotice(
@@ -514,143 +558,19 @@ export default function App() {
           : `पेज ${targetPage}: स्कैन किया गया पेज — हाई-रेज़ोल्यूशन रेंडर जारी है (10%)…`
       );
 
-      let worker = null;
       try {
-        let offscreen = null;
-
-        // Render at high resolution (1800px to 2400px width) so small 8pt-9pt newsprint is razor sharp
-        if (pdfDoc) {
-          try {
-            const pageObj = await pdfDoc.getPage(targetPage);
-            if (ocrAbortTokenRef.current !== currentOcrToken) return;
-
-            const unscaledViewport = pageObj.getViewport({ scale: 1.0 });
-            const targetWidth = Math.min(2400, Math.max(1800, (unscaledViewport.width || 800) * 2.0));
-            const ocrScale = targetWidth / (unscaledViewport.width || 800);
-            const ocrViewport = pageObj.getViewport({ scale: ocrScale });
-
-            offscreen = document.createElement("canvas");
-            offscreen.width = ocrViewport.width;
-            offscreen.height = ocrViewport.height;
-            const ctx = offscreen.getContext("2d", { willReadFrequently: true });
-            await pageObj.render({ canvasContext: ctx, viewport: ocrViewport }).promise;
-          } catch (renderErr) {
-            console.warn("High-res PDF offscreen render fallback:", renderErr);
-          }
-        }
-
-        // Fallback to active canvas if direct page render unavailable
-        if (!offscreen && pdfCanvas.current) {
-          const srcCanvas = pdfCanvas.current;
-          offscreen = document.createElement("canvas");
-          offscreen.width = srcCanvas.width;
-          offscreen.height = srcCanvas.height;
-          const ctx = offscreen.getContext("2d");
-          ctx.drawImage(srcCanvas, 0, 0);
-        }
-
-        if (!offscreen || ocrAbortTokenRef.current !== currentOcrToken) return;
-
-        // Image preprocessing for difficult newsprint: contrast enhancement & grayscale
-        const ctx = offscreen.getContext("2d");
-        ctx.filter = "grayscale(100%) contrast(150%)";
-        ctx.drawImage(offscreen, 0, 0);
-
-        setOcrProgress(20);
-        setNotice(`पेज ${targetPage}: इमेज प्री-प्रोसेसिंग पूर्ण (20%)…`);
-
-        let langBase = getPublicAssetUrl("");
-        const workerLogger = (m) => {
-          if (ocrAbortTokenRef.current !== currentOcrToken) return;
-          let prog = 25;
-          if (m.status === "loading tesseract core" || m.status === "initializing tesseract") {
-            prog = 25 + Math.round((m.progress || 0) * 10);
-            setNotice(`पेज ${targetPage}: OCR इंजन लोड हो रहा है (${prog}%)…`);
-          } else if (m.status === "loading language traineddata" || m.status === "initializing api") {
-            prog = 35 + Math.round((m.progress || 0) * 10);
-            setNotice(`पेज ${targetPage}: भाषा मॉडल लोड हो रहा है (${prog}%)…`);
-          } else if (m.status === "recognizing text" && typeof m.progress === "number") {
-            prog = 45 + Math.round(m.progress * 50);
-            setNotice(`पेज ${targetPage}: टेक्स्ट पहचान जारी है (${prog}%)…`);
-          }
-          setOcrProgress(Math.min(96, Math.max(10, prog)));
-        };
-
-        try {
-          worker = await createWorker("eng", 1, {
-            langPath: langBase,
-            gzip: true,
-            logger: workerLogger
-          });
-        } catch (localWorkerErr) {
-          console.warn("Local OCR worker init failed, using default CDN fallback:", localWorkerErr);
-          worker = await createWorker("eng", 1, {
-            logger: workerLogger
-          });
-        }
-
-        if (ocrAbortTokenRef.current !== currentOcrToken) {
-          await worker.terminate();
-          return;
-        }
-
-        const ret = await worker.recognize(offscreen, {}, { blocks: true, tsv: true });
-        await worker.terminate();
-        worker = null;
-
-        if (ocrAbortTokenRef.current !== currentOcrToken) return;
-
-        setOcrProgress(98);
-        setNotice(`पेज ${targetPage}: शब्द संरचना और निर्देशांक मैपिंग (98%)…`);
-
-        const imageW = offscreen.width || 1;
-        const imageH = offscreen.height || 1;
-        const words = [];
-
-        if (ret.data?.tsv) {
-          const lines = ret.data.tsv.split("\n");
-          for (const line of lines) {
-            const cols = line.split("\t");
-            if (cols.length >= 12 && cols[0] === "5") {
-              const left = parseInt(cols[6], 10);
-              const top = parseInt(cols[7], 10);
-              const width = parseInt(cols[8], 10);
-              const height = parseInt(cols[9], 10);
-              const conf = parseFloat(cols[10]);
-              const rawText = cols[11]?.trim();
-              if (rawText && !isNaN(left) && !isNaN(top) && (isNaN(conf) || conf >= 25)) {
-                const segmented = segmentOcrText(rawText, left, top, width, height, conf, imageW, imageH);
-                for (const seg of segmented) {
-                  words.push(seg);
-                }
-              }
+        const words = await performPageOCR({
+          docId: docFingerprint,
+          pageNumber: targetPage,
+          pdfDoc,
+          fallbackCanvas: pdfCanvas.current,
+          onProgress: (p) => {
+            if (activeOcrPageRef.current === targetPage) {
+              setOcrProgress(p.progress);
+              if (p.message) setNotice(p.message);
             }
           }
-        } else if (ret.data?.blocks && ret.data.blocks.length > 0) {
-          for (const block of ret.data.blocks) {
-            for (const para of block.paragraphs || []) {
-              for (const line of para.lines || []) {
-                for (const w of line.words || []) {
-                  if (w.text && w.bbox && (w.confidence === undefined || w.confidence >= 25)) {
-                    const segmented = segmentOcrText(
-                      w.text,
-                      w.bbox.x0,
-                      w.bbox.y0,
-                      w.bbox.x1 - w.bbox.x0,
-                      w.bbox.y1 - w.bbox.y0,
-                      w.confidence || 90,
-                      imageW,
-                      imageH
-                    );
-                    for (const seg of segmented) {
-                      words.push(seg);
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
+        });
 
         ocrCache.current.set(targetPage, words);
 
@@ -664,29 +584,54 @@ export default function App() {
           }
         }
       } catch (err) {
-        if (ocrAbortTokenRef.current === currentOcrToken) {
-          console.error("OCR error:", err);
+        console.error(`Page ${targetPage} OCR error:`, err);
+        if (page === targetPage) {
           setNotice("OCR विश्लेषण पूरा नहीं हो सका।");
         }
       } finally {
-        if (worker) {
-          try {
-            await worker.terminate();
-          } catch {}
-        }
         if (activeOcrPageRef.current === targetPage) {
           activeOcrPageRef.current = null;
+          setActiveOcrPage(null);
           setOcrBusy(false);
           setOcrProgress(0);
         }
       }
     },
-    [pdfDoc, page]
+    [pdfDoc, page, docFingerprint]
   );
 
   const runOCR = useCallback(() => {
     processPageOCR(page, true);
   }, [processPageOCR, page]);
+
+  // Inspect page object on initial render: if native text is usable, skip OCR completely!
+  const onPageRenderSuccess = useCallback(
+    async (pageObj) => {
+      if (!pageObj) return;
+      try {
+        const evaluation = await evaluatePageNativeText(pageObj);
+        pageScannedMapRef.current.set(page, evaluation.isScanned);
+        setIsScannedPage(evaluation.isScanned);
+
+        if (!evaluation.isScanned) {
+          // Native digital PDF page: skip OCR completely!
+          setOcrWords([]);
+        } else {
+          // Scanned page: load cached OCR or trigger background job
+          const cached = await getCachedOcrWords(docFingerprint, page);
+          if (cached && cached.length > 0) {
+            setOcrWords(cached);
+          } else {
+            setOcrWords([]);
+            processPageOCR(page, false);
+          }
+        }
+      } catch (e) {
+        console.warn("onPageRenderSuccess evaluation warning:", e);
+      }
+    },
+    [page, docFingerprint, processPageOCR]
+  );
 
   // Mixed PDF Auto-Detection & Automatic OCR Pipeline
   // Inspects rendered text spans; if page is scanned/image-based, triggers OCR in background
@@ -705,19 +650,24 @@ export default function App() {
     // A page is scanned if it has fewer than 6 recognizable words or < 30 characters
     const isScanned = spans.length < 5 || validWords.length < 6 || charCount < 30;
     setIsScannedPage(isScanned);
+    pageScannedMapRef.current.set(page, isScanned);
 
     if (isScanned) {
-      if (ocrCache.current.has(page)) {
-        setOcrWords(ocrCache.current.get(page));
-      } else {
-        setOcrWords([]);
-        // Automatically start background OCR for this scanned page
-        processPageOCR(page, false);
-      }
+      getCachedOcrWords(docFingerprint, page).then((cached) => {
+        if (cached && cached.length > 0) {
+          setOcrWords(cached);
+        } else if (ocrCache.current.has(page)) {
+          setOcrWords(ocrCache.current.get(page));
+        } else {
+          setOcrWords([]);
+          // Automatically start background OCR for this scanned page
+          processPageOCR(page, false);
+        }
+      });
     } else {
       setOcrWords([]);
     }
-  }, [page, processPageOCR]);
+  }, [page, processPageOCR, docFingerprint]);
 
   // Process text selection across PDF text spans or OCR overlays
   const processSelectionOrClick = useCallback(
@@ -725,11 +675,16 @@ export default function App() {
       // If clicking inside the popup, let popup buttons handle their events
       if (popupRef.current && e?.target && popupRef.current.contains(e.target)) return;
 
-      // If user was dragging/panning the document with mouse, do not trigger word selection
-      if (mouseDragStartRef.current.hasMoved) {
+      // Check if user made an active text selection across PDF text spans or OCR overlays
+      const sel = typeof window !== "undefined" ? window.getSelection() : null;
+      const hasActiveSelection = sel && !sel.isCollapsed && sel.rangeCount > 0 && sel.toString().trim().length > 0;
+
+      // If user was dragging/panning the document with mouse AND has NO active selection, do not trigger word selection
+      if (!hasActiveSelection && mouseDragStartRef.current.hasMoved) {
         mouseDragStartRef.current.hasMoved = false;
         return;
       }
+      mouseDragStartRef.current.hasMoved = false;
 
       // Prevent accidental ghost selection immediately after dismissal
       if (Date.now() - justDismissedTimeRef.current < 400) {
@@ -737,8 +692,7 @@ export default function App() {
       }
 
       // 1. Check if user made an active text selection across PDF text spans or OCR overlays
-      const sel = window.getSelection();
-      if (sel && !sel.isCollapsed && sel.rangeCount > 0) {
+      if (hasActiveSelection) {
         const range = sel.getRangeAt(0);
         const container =
           range.commonAncestorContainer?.nodeType === (typeof Node !== "undefined" ? Node.ELEMENT_NODE : 1)
@@ -783,9 +737,9 @@ export default function App() {
       }
 
       // 2. For text-based PDFs: check if user clicked on a word in the PDF text layer
-      const clientX = typeof e.clientX === "number" ? e.clientX : 0;
-      const clientY = typeof e.clientY === "number" ? e.clientY : 0;
-      const targetEl = e.target || (typeof document !== "undefined" && clientX && clientY ? document.elementFromPoint(clientX, clientY) : null);
+      const clientX = typeof e?.clientX === "number" ? e.clientX : 0;
+      const clientY = typeof e?.clientY === "number" ? e.clientY : 0;
+      const targetEl = e?.target || (typeof document !== "undefined" && clientX && clientY ? document.elementFromPoint(clientX, clientY) : null);
       const textSpan = targetEl?.closest?.(".textLayer span");
 
       if (!isScannedPage && clientX && clientY) {
@@ -806,7 +760,7 @@ export default function App() {
       }
 
       // 3. For scanned PDFs: check if user clicked an OCR recognized word box
-      const ocrSpan = e.target?.closest?.(".ocr-word-span");
+      const ocrSpan = e?.target?.closest?.(".ocr-word-span");
       if (ocrSpan && ocrSpan.getAttribute("data-word")) {
         const word = ocrSpan.getAttribute("data-word");
         const clean = cleanSingleWord(word);
@@ -839,7 +793,8 @@ export default function App() {
             rect,
             sentence: ocrSentence,
             ocrConfidence,
-            targetEl: ocrSpan
+            targetEl: ocrSpan,
+            ocrIndex: idx
           });
           return;
         }
@@ -875,7 +830,10 @@ export default function App() {
   );
 
   useEffect(() => {
+    let selectionSettlingTimer = null;
+
     const onTouchStart = (e) => {
+      isPointerDownRef.current = true;
       if (popupRef.current && e.target && popupRef.current.contains(e.target)) {
         touchInsidePopupRef.current = true;
         return;
@@ -886,7 +844,12 @@ export default function App() {
       }
     };
 
+    const onMouseDownDoc = () => {
+      isPointerDownRef.current = true;
+    };
+
     const onMouseUp = (e) => {
+      isPointerDownRef.current = false;
       if (popupRef.current && e.target && popupRef.current.contains(e.target)) {
         return;
       }
@@ -897,6 +860,7 @@ export default function App() {
     };
 
     const onTouchEnd = (e) => {
+      isPointerDownRef.current = false;
       if (touchInsidePopupRef.current) {
         touchInsidePopupRef.current = false;
         return;
@@ -931,7 +895,7 @@ export default function App() {
         }
 
         // If an active text selection was made, process synchronously on touch end
-        // to immediately capture and suppress Android's native ActionMode bar
+        // to immediately capture and translate without extra interaction
         if (hasSelection) {
           if (touchEndTimerRef.current) {
             clearTimeout(touchEndTimerRef.current);
@@ -964,6 +928,31 @@ export default function App() {
       }
     };
 
+    // Automatic translation trigger when mobile selection handles or desktop selection changes settle
+    const onSelectionChange = () => {
+      if (isPointerDownRef.current) return;
+      if (selectionSettlingTimer) clearTimeout(selectionSettlingTimer);
+      selectionSettlingTimer = setTimeout(() => {
+        if (isPointerDownRef.current) return;
+        const sel = typeof window !== "undefined" ? window.getSelection() : null;
+        if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
+        const raw = sel.toString().trim();
+        if (!raw || raw.length < 1) return;
+        if (raw === lastProcessedSelectionSignatureRef.current) return;
+
+        // Verify selection is within reader area
+        const range = sel.getRangeAt(0);
+        const container =
+          range.commonAncestorContainer?.nodeType === 1
+            ? range.commonAncestorContainer
+            : range.commonAncestorContainer?.parentElement;
+        if (!readerAreaRef.current?.contains(container)) return;
+
+        lastProcessedSelectionSignatureRef.current = raw;
+        processSelectionOrClick({ type: "selectionchange" });
+      }, 160);
+    };
+
     const onContextMenu = (e) => {
       if (
         e.target &&
@@ -977,16 +966,23 @@ export default function App() {
     };
 
     document.addEventListener("touchstart", onTouchStart, { passive: true });
+    document.addEventListener("mousedown", onMouseDownDoc, { passive: true });
     document.addEventListener("mouseup", onMouseUp);
     document.addEventListener("touchend", onTouchEnd);
+    document.addEventListener("selectionchange", onSelectionChange);
     document.addEventListener("contextmenu", onContextMenu);
     return () => {
       document.removeEventListener("touchstart", onTouchStart);
+      document.removeEventListener("mousedown", onMouseDownDoc);
       document.removeEventListener("mouseup", onMouseUp);
       document.removeEventListener("touchend", onTouchEnd);
+      document.removeEventListener("selectionchange", onSelectionChange);
       document.removeEventListener("contextmenu", onContextMenu);
       if (touchEndTimerRef.current) {
         clearTimeout(touchEndTimerRef.current);
+      }
+      if (selectionSettlingTimer) {
+        clearTimeout(selectionSettlingTimer);
       }
     };
   }, [processSelectionOrClick]);
@@ -1100,7 +1096,8 @@ export default function App() {
     if (e.target?.closest?.("button, input, select, textarea, a")) return;
 
     const isMiddle = e.button === 1;
-    const isLeftOnNonText = e.button === 0 && !e.target?.closest?.(".textLayer span");
+    const isTextSurface = e.target?.closest?.(".textLayer") || e.target?.closest?.(".ocr-overlay") || e.target?.closest?.(".page-paper");
+    const isLeftOnNonText = e.button === 0 && !isTextSurface;
 
     if (isMiddle || isLeftOnNonText) {
       const reader = readerAreaRef.current;
@@ -1235,10 +1232,29 @@ export default function App() {
     } catch {}
     setPage(target);
     setPageJumpInput(String(target));
+
+    if (pageScannedMapRef.current.has(target)) {
+      const isScanned = pageScannedMapRef.current.get(target);
+      setIsScannedPage(isScanned);
+      if (!isScanned) {
+        setOcrWords([]);
+        return;
+      }
+    }
+
     if (ocrCache.current.has(target)) {
       setOcrWords(ocrCache.current.get(target));
+      setIsScannedPage(true);
     } else {
-      setOcrWords([]);
+      getCachedOcrWords(docFingerprint, target).then((cached) => {
+        if (cached && cached.length > 0) {
+          ocrCache.current.set(target, cached);
+          setOcrWords(cached);
+          setIsScannedPage(true);
+        } else {
+          setOcrWords([]);
+        }
+      });
     }
   };
 
@@ -1256,8 +1272,10 @@ export default function App() {
 
     // Reset OCR cache, active words, and search state so new PDF has no stale data
     ocrCache.current.clear();
+    pageScannedMapRef.current.clear();
     setOcrWords([]);
     setIsScannedPage(false);
+    setActiveOcrPage(null);
     setSearchResults([]);
     setSearchNotice("");
     setPage(1);
@@ -1309,8 +1327,10 @@ export default function App() {
       } catch {}
 
       ocrCache.current.clear();
+      pageScannedMapRef.current.clear();
       setOcrWords([]);
       setIsScannedPage(false);
+      setActiveOcrPage(null);
       setSearchResults([]);
       setSearchNotice("");
       setPage(1);
@@ -1785,8 +1805,9 @@ export default function App() {
                 baseWidth={baseWidth}
                 pdfCanvasRef={pdfCanvas}
                 onTextLayerRenderSuccess={onTextLayerRenderSuccess}
+                onPageRenderSuccess={onPageRenderSuccess}
                 isScannedPage={isScannedPage}
-                ocrBusy={ocrBusy}
+                ocrBusy={ocrBusy && activeOcrPage === page}
                 ocrProgress={ocrProgress}
                 ocrWords={ocrWords}
                 showOcrBoxes={showOcrBoxes}

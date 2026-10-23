@@ -261,7 +261,8 @@ export function extractSurroundingSentence(range, normalizedText) {
             const rCurr = startSpan.getBoundingClientRect ? startSpan.getBoundingClientRect() : null;
             const rPrev = prevSpan.getBoundingClientRect ? prevSpan.getBoundingClientRect() : null;
             if (rCurr && rPrev && rCurr.width > 0 && rPrev.width > 0) {
-              const noHorizontalOverlap = rPrev.right < rCurr.left - 30 || rCurr.right < rPrev.left - 30;
+              const isNaturalVerticalCol = Math.abs(rCurr.left - rPrev.left) < 220;
+              const noHorizontalOverlap = (rPrev.right < rCurr.left - 30 || rCurr.right < rPrev.left - 30) && !isNaturalVerticalCol;
               if (noHorizontalOverlap && Math.abs(rCurr.top - rPrev.top) > 8) {
                 break;
               }
@@ -286,7 +287,8 @@ export function extractSurroundingSentence(range, normalizedText) {
             const rCurr = startSpan.getBoundingClientRect ? startSpan.getBoundingClientRect() : null;
             const rNext = nextSpan.getBoundingClientRect ? nextSpan.getBoundingClientRect() : null;
             if (rCurr && rNext && rCurr.width > 0 && rNext.width > 0) {
-              const noHorizontalOverlap = rNext.right < rCurr.left - 30 || rCurr.right < rNext.left - 30;
+              const isNaturalVerticalCol = Math.abs(rCurr.left - rNext.left) < 220;
+              const noHorizontalOverlap = (rNext.right < rCurr.left - 30 || rCurr.right < rNext.left - 30) && !isNaturalVerticalCol;
               if (noHorizontalOverlap && Math.abs(rCurr.top - rNext.top) > 8) {
                 break;
               }
@@ -451,9 +453,11 @@ export function expandRangeToSelection(range) {
           const rStart = startSpan.getBoundingClientRect ? startSpan.getBoundingClientRect() : null;
           const rEnd = endSpan.getBoundingClientRect ? endSpan.getBoundingClientRect() : null;
           if (rStart && rEnd && rStart.width > 0 && rEnd.width > 0) {
-            const horizontalGap = rEnd.left > rStart.right + 25 || rStart.left > rEnd.right + 25;
+            // Distinguish natural downward line-wrapping within the same column from crossing an actual column gutter
+            const isNaturalDownwardWrap = rEnd.top >= rStart.bottom - 4 && Math.abs(rEnd.left - rStart.left) < 220;
+            const horizontalGap = (rEnd.left > rStart.right + 25) || (rStart.left > rEnd.right + 25 && !isNaturalDownwardWrap);
             const verticalDisplacement = Math.abs(rEnd.top - rStart.top) > 10;
-            if (horizontalGap && verticalDisplacement) {
+            if (horizontalGap && verticalDisplacement && !isNaturalDownwardWrap) {
               // The selection crosses a newspaper column gutter: clamp to primary column
               const textLayer = startSpan.closest?.(".textLayer");
               if (textLayer && typeof textLayer.querySelectorAll === "function") {
@@ -465,7 +469,7 @@ export function expandRangeToSelection(range) {
                     const sp = allSpans[i];
                     const r = sp.getBoundingClientRect ? sp.getBoundingClientRect() : null;
                     if (r && r.width > 0) {
-                      const inAnotherCol = r.left > rStart.right + 25 || rStart.left > r.right + 25;
+                      const inAnotherCol = (r.left > rStart.right + 25) || (rStart.left > r.right + 25 && !(r.top >= rStart.bottom - 4 && Math.abs(r.left - rStart.left) < 220));
                       if (inAnotherCol && Math.abs(r.top - rStart.top) > 10) {
                         break;
                       }
